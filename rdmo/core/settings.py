@@ -249,6 +249,8 @@ EXPORT_PANDOC_ARGS = {
 
 PROJECT_ISSUES = True
 
+PROJECT_ISSUE_PROVIDERS = []
+
 PROJECT_VIEWS = True
 
 PROJECT_EXPORTS = [
@@ -256,6 +258,8 @@ PROJECT_EXPORTS = [
     ('csvcomma', _('CSV comma separated'), 'rdmo.projects.exports.CSVCommaExport'),
     ('csvsemicolon', _('CSV semicolon separated'), 'rdmo.projects.exports.CSVSemicolonExport')
 ]
+
+PROJECT_EXPORT_PROVIDERS = []
 
 PROJECT_IMPORTS = [
     ('xml', _('RDMO XML'), 'rdmo.projects.imports.RDMOXMLImport'),
@@ -272,8 +276,6 @@ PROJECT_INVITE_TIMEOUT = None
 PROJECT_SEND_INVITE = True
 
 NESTED_PROJECTS = True
-
-SERVICE_PROVIDERS = []
 
 OPTIONSET_PROVIDERS = []
 
