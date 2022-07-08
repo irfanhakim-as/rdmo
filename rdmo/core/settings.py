@@ -186,6 +186,7 @@ SETTINGS_EXPORT = [
     'PROJECT_VIEWS',
     'PROJECT_EXPORTS',
     'PROJECT_IMPORTS',
+    'PROJECT_IMPORTS_LIST',
     'PROJECT_SEND_ISSUE',
     'PROJECT_QUESTIONS_AUTOSAVE',
     'NESTED_PROJECTS'
@@ -193,6 +194,7 @@ SETTINGS_EXPORT = [
 
 SETTINGS_API = [
     'PROJECT_QUESTIONS_AUTOSAVE',
+    'PROJECT_QUESTIONS_CYCLE_SETS',
     'DEFAULT_URI_PREFIX'
 ]
 
@@ -249,6 +251,8 @@ EXPORT_PANDOC_ARGS = {
 
 PROJECT_ISSUES = True
 
+PROJECT_ISSUE_PROVIDERS = []
+
 PROJECT_VIEWS = True
 
 PROJECT_EXPORTS = [
@@ -261,7 +265,11 @@ PROJECT_IMPORTS = [
     ('xml', _('RDMO XML'), 'rdmo.projects.imports.RDMOXMLImport'),
 ]
 
+PROJECT_IMPORTS_LIST = []
+
 PROJECT_QUESTIONS_AUTOSAVE = False
+
+PROJECT_QUESTIONS_CYCLE_SETS = False
 
 PROJECT_FILE_QUOTA = '10Mb'
 
@@ -272,8 +280,6 @@ PROJECT_INVITE_TIMEOUT = None
 PROJECT_SEND_INVITE = True
 
 NESTED_PROJECTS = True
-
-SERVICE_PROVIDERS = []
 
 OPTIONSET_PROVIDERS = []
 
@@ -316,6 +322,23 @@ VENDOR = {
             {
                 'path': 'css/bootstrap.min.css',
                 'sri': 'sha384-HSMxcRTRxnN+Bdg0JdbxYKrThecOKuH5zCYotlSAcp1+c8xmyTe9GYg1l9a69psu',
+            }
+        ],
+        'font': [
+            {
+                'path': 'fonts/glyphicons-halflings-regular.eot'
+            },
+            {
+                'path': 'fonts/glyphicons-halflings-regular.woff'
+            },
+            {
+                'path': 'fonts/glyphicons-halflings-regular.woff2'
+            },
+            {
+                'path': 'fonts/glyphicons-halflings-regular.ttf'
+            },
+            {
+                'path': 'fonts/glyphicons-halflings-regular.svg'
             }
         ]
     },

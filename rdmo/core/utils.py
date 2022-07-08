@@ -8,15 +8,15 @@ from tempfile import mkstemp
 from urllib.parse import urlparse
 
 import pypandoc
-from markdown import markdown
-
-from defusedcsv import csv
 from django.apps import apps
 from django.conf import settings
 from django.http import Http404, HttpResponse, HttpResponseBadRequest
 from django.template.loader import get_template
 from django.utils.encoding import force_str
 from django.utils.translation import gettext_lazy as _
+from markdown import markdown
+
+from defusedcsv import csv
 
 log = logging.getLogger(__name__)
 
@@ -57,7 +57,10 @@ def get_uri_prefix(obj):
 
 
 def get_pandoc_main_version():
-    return int(pypandoc.get_pandoc_version().split('.')[0])
+    try:
+        return int(pypandoc.get_pandoc_version().split('.')[0])
+    except OSError:
+        return None
 
 
 def pandoc_version_at_least(required_version):
@@ -183,6 +186,7 @@ def render_to_format(request, export_format, title, template_src, context):
     if export_format == 'html':
         # create the response object
         response = HttpResponse(html)
+        response['Content-Disposition'] = 'filename="%s.%s"' % (title, export_format)
 
     else:
         pandoc_args = settings.EXPORT_PANDOC_ARGS.get(export_format, [])
@@ -208,9 +212,11 @@ def render_to_format(request, export_format, title, template_src, context):
                 pandoc_args.append('--reference-doc={}'.format(refdoc))
 
         # add the possible resource-path
-        if 'resource_path' in context and pandoc_version_at_least("2") is True:
-            resource_path = Path(settings.MEDIA_ROOT).joinpath(context['resource_path']).as_posix()
-            pandoc_args.append('--resource-path={}'.format(resource_path))
+        if pandoc_version_at_least("2") is True:
+            pandoc_args.append('--resource-path={}'.format(settings.STATIC_ROOT))
+            if 'resource_path' in context:
+                resource_path = Path(settings.MEDIA_ROOT).joinpath(context['resource_path'])
+                pandoc_args.append('--resource-path={}'.format(resource_path))
 
         # create a temporary file
         (tmp_fd, tmp_filename) = mkstemp('.' + export_format)
@@ -223,6 +229,10 @@ def render_to_format(request, export_format, title, template_src, context):
 
         # convert the file using pandoc
         log.info('Export %s document using args %s.', export_format, pandoc_args)
+        html = re.sub(
+            r'(<img.+src=["\'])' + settings.STATIC_URL + r'([\w\-\@?^=%&/~\+#]+)', r'\g<1>' +
+            str(Path(settings.STATIC_ROOT)) + r'/\g<2>', html
+        )
         pypandoc.convert_text(
             html, export_format, format='html',
             outputfile=tmp_filename, extra_args=pandoc_args
@@ -278,7 +288,7 @@ def sanitize_url(s):
         if bool(m) is False:
             s = ''
         else:
-            s = re.sub('/+', '/', s)
+            s = re.sub(r'/+', '/', s)
     return s
 
 
@@ -338,9 +348,11 @@ def markdown2html(markdown_string):
     # `[<string>]{<title>}` to <span title="<title>"><string></span> to
     # allow for underlined tooltips
     html = markdown(force_str(markdown_string))
-    html = re.sub(r'\[(.*?)\]\{(.*?)\}',
-                  r'<span data-toggle="tooltip" data-placement="bottom" data-html="true" title="\2">\1</span>',
-                  html)
+    html = re.sub(
+        r'\[(.*?)\]\{(.*?)\}',
+        r'<span data-toggle="tooltip" data-placement="bottom" data-html="true" title="\2">\1</span>',
+        html
+    )
     return html
 
 

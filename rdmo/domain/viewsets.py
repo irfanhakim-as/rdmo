@@ -40,7 +40,7 @@ class AttributeViewSet(CopyModelMixin, ModelViewSet):
 
     @action(detail=False)
     def index(self, request):
-        queryset = self.get_queryset()
+        queryset = Attribute.objects.order_by('path')
         serializer = AttributeIndexSerializer(queryset, many=True)
         return Response(serializer.data)
 
@@ -52,6 +52,7 @@ class AttributeViewSet(CopyModelMixin, ModelViewSet):
 
     @action(detail=True, url_path='export', permission_classes=[HasModelPermission])
     def detail_export(self, request, pk=None):
-        serializer = AttributeExportSerializer(self.get_object())
-        xml = AttributeRenderer().render([serializer.data])
+        queryset = self.get_object().get_descendants(include_self=True)
+        serializer = AttributeExportSerializer(queryset, many=True)
+        xml = AttributeRenderer().render(serializer.data)
         return XMLResponse(xml, name=self.get_object().key)

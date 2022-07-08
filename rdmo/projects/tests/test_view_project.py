@@ -19,34 +19,34 @@ users = (
 
 view_project_permission_map = {
     'owner': [1, 2, 3, 4, 5],
-    'manager': [1, 3, 5],
-    'author': [1, 3, 5],
-    'guest': [1, 3, 5],
+    'manager': [1, 3, 5, 7],
+    'author': [1, 3, 5, 8],
+    'guest': [1, 3, 5, 9],
     'api': [1, 2, 3, 4, 5],
-    'site': [1, 2, 3, 4, 5]
+    'site': [1, 2, 3, 4, 5, 6, 7, 8, 9]
 }
 
 change_project_permission_map = {
     'owner': [1, 2, 3, 4, 5],
-    'manager': [1, 3, 5],
+    'manager': [1, 3, 5, 7],
     'api': [1, 2, 3, 4, 5],
-    'site': [1, 2, 3, 4, 5]
+    'site': [1, 2, 3, 4, 5, 6, 7, 8, 9]
 }
 
 delete_project_permission_map = {
     'owner': [1, 2, 3, 4, 5],
     'api': [1, 2, 3, 4, 5],
-    'site': [1, 2, 3, 4, 5]
+    'site': [1, 2, 3, 4, 5, 6, 7, 8, 9]
 }
 
 export_project_permission_map = {
     'owner': [1, 2, 3, 4, 5],
-    'manager': [1, 3, 5],
+    'manager': [1, 3, 5, 7],
     'api': [1, 2, 3, 4, 5],
-    'site': [1, 2, 3, 4, 5]
+    'site': [1, 2, 3, 4, 5, 6, 7, 8, 9]
 }
 
-projects = [1, 2, 3, 4, 5]
+projects = [1, 2, 3, 4, 5, 6, 7, 8, 9]
 
 export_formats = ('rtf', 'odt', 'docx', 'html', 'markdown', 'tex', 'pdf')
 
@@ -62,7 +62,7 @@ def test_list(db, client, username, password):
     url = reverse('projects')
     response = client.get(url)
 
-    projects = re.findall(r'/projects/(\d+)/update/', response.content.decode())
+    projects = re.findall(r'/projects/(\d+)/', response.content.decode())
 
     if password:
         assert response.status_code == 200
@@ -70,7 +70,7 @@ def test_list(db, client, username, password):
         if username == 'site':
             assert projects == []
         else:
-            assert sorted([int(project_id) for project_id in projects]) \
+            assert sorted(list(set([int(project_id) for project_id in projects]))) \
                 == view_project_permission_map.get(username, [])
     else:
         assert response.status_code == 302

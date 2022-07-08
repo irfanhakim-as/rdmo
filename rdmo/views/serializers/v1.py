@@ -15,13 +15,14 @@ class ViewSerializer(TranslationSerializerMixin, serializers.ModelSerializer):
     key = serializers.SlugField(required=True)
 
     def validate(self, data):
-        # try to render the tamplate to see that the syntax is ok
-        try:
-            Template(data['template']).render(Context({}))
-        except (KeyError, IndexError):
-            pass
-        except (TemplateSyntaxError, TypeError) as e:
-            raise exceptions.ValidationError({'template': '\n'.join(e.args)})
+        # try to render the template to see that the syntax is ok (if the editor was used)
+        if self.context['request'].data.get('editor'):
+            try:
+                Template(data['template']).render(Context({}))
+            except (KeyError, IndexError):
+                pass
+            except (TemplateSyntaxError, TypeError) as e:
+                raise exceptions.ValidationError({'template': '\n'.join(e.args)})
 
         return super(ViewSerializer, self).validate(data)
 

@@ -10,7 +10,7 @@ angular.module('project_questions')
 
     var resources = {
         projects: $resource(baseurl + 'api/v1/projects/projects/:id/:detail_action/'),
-        values: $resource(baseurl + 'api/v1/projects/projects/:project/values/:id/'),
+        values: $resource(baseurl + 'api/v1/projects/projects/:project/values/:id/:detail_action/'),
         questionsets: $resource(baseurl + 'api/v1/projects/projects/:project/questionsets/:list_action/:id/'),
         settings: $resource(baseurl + 'api/v1/core/settings/')
     };
@@ -33,7 +33,7 @@ angular.module('project_questions')
         valuesets: function(set_prefix, set_index) {
             return {
                 set_prefix: set_prefix,
-                set_index: set_index,
+                set_index: parseInt(set_index),
                 hidden: {
                     questionsets: {},
                     questions: {},
@@ -47,6 +47,10 @@ angular.module('project_questions')
     /* create a buffer for the future service content */
 
     var future = {};
+
+    /* create a buffer for the past service content */
+
+    var past = {};
 
     /* create a flag to be used when clicking the prev button */
 
@@ -100,7 +104,8 @@ angular.module('project_questions')
                         service.initError();
                     }
                 } else {
-                    if (path !== service.questionset.id) {
+                    // this needs to be != and not !== since path is a string!
+                    if (path != service.questionset.id) {
                         service.initView(path);
                     }
                 }
@@ -135,6 +140,11 @@ angular.module('project_questions')
             // enable initializing flag
             initializing = true;
 
+            if (angular.isDefined(service.questionset)) {
+                past.questionset = service.questionset
+                past.set_index = service.set_index
+            }
+
             return service.fetchQuestionSet(questionset_id)
             .then(service.fetchOptions)
             .then(service.fetchValues)
@@ -149,7 +159,15 @@ angular.module('project_questions')
 
                 // activate fist valueset
                 if (angular.isDefined(service.valuesets[service.questionset.id][service.set_prefix])) {
-                    service.set_index = service.valuesets[service.questionset.id][service.set_prefix][0].set_index;
+                    if (angular.isDefined(past.questionset) &&
+                        past.questionset.is_collection &&
+                        past.questionset.attribute == service.questionset.attribute &&
+                        !service.settings.project_questions_cycle_sets) {
+                        // use the same set index as before
+                        service.set_index = past.set_index
+                    } else {
+                        service.set_index = service.valuesets[service.questionset.id][service.set_prefix][0].set_index;
+                    }
                 } else {
                     service.set_index = null;
                 }
@@ -220,10 +238,13 @@ angular.module('project_questions')
     };
 
     service.fetchQuestionSet = function(questionset_id) {
-
         // fetch the current (or the first) question set from the server
         if (questionset_id) {
-            future.questionset = resources.questionsets.get({project: service.project.id, id: questionset_id});
+            future.questionset = resources.questionsets.get({
+                project: service.project.id,
+                id: questionset_id,
+                back: back
+            });
         } else {
             future.questionset = resources.questionsets.get({
                 project: service.project.id,
@@ -645,6 +666,7 @@ angular.module('project_questions')
                     id: value.id,
                     project: service.project.id
                 }, function() {
+                    delete(value.id);
                     value.changed = false;
                 }).$promise;
             } else {
@@ -805,7 +827,7 @@ angular.module('project_questions')
     service.save = function(proceed) {
         return service.storeValues().then(function() {
             if (angular.isDefined(proceed) && proceed) {
-                if (service.questionset.is_collection) {
+                if (service.settings.project_questions_cycle_sets && service.questionset.is_collection) {
                     if (service.set_index === null) {
                         service.next();
                     } else {
@@ -1026,7 +1048,7 @@ angular.module('project_questions')
         if (service.valuesets[questionset.id][set_prefix].length > 0) {
             var valuesets = $filter('orderBy')(service.valuesets[questionset.id][set_prefix], '-set_index');
             var last_set_index = valuesets[0].set_index;
-            set_index = parseInt(last_set_index) + 1;
+            set_index = last_set_index + 1;
         }
         service.valuesets[questionset.id][set_prefix].push(factories.valuesets(set_prefix, set_index));
 
@@ -1118,32 +1140,40 @@ angular.module('project_questions')
     };
 
     service.removeValueSet = function(questionset, set_prefix, set_index) {
-        // delete the value for the attribute of this questionset
-        if (questionset.attribute && angular.isDefined(service.values[questionset.attribute])) {
-            angular.forEach(service.values[questionset.attribute][set_prefix][set_index], function(value) {
-                if (angular.isDefined(value)) {
-                    value.removed = true;
-                    service.storeValue(value, null, set_prefix, set_index, value.collection_index);
-                }
+        if (questionset.attribute) {
+            // delete all values of this set in the project using the special /set endpoint
+            if (angular.isDefined(service.values[questionset.attribute])) {
+                angular.forEach(service.values[questionset.attribute][set_prefix][set_index], function(value) {
+                    if (angular.isDefined(value) && angular.isDefined(value.id)) {
+                        value.removed = true;
+                        return resources.values.delete({
+                            id: value.id,
+                            project: service.project.id,
+                            detail_action: 'set'
+                        }, function() {
+                            value.changed = true;
+                        }).$promise;
+                    }
+                });
+            }
+        } else {
+            // delete the values for the attribute of the questions of this questionset
+            angular.forEach(questionset.questions, function(question) {
+                angular.forEach(service.values[question.attribute][set_prefix][set_index], function(value) {
+                    if (angular.isDefined(value)) {
+                        value.removed = true;
+                        service.storeValue(value, null, set_prefix, set_index, value.collection_index);
+                    }
+                });
             });
         }
-
-        // delete the values for the attribute of the questions of this questionset
-        angular.forEach(questionset.questions, function(question) {
-            angular.forEach(service.values[question.attribute][set_prefix][set_index], function(value) {
-                if (angular.isDefined(value)) {
-                    value.removed = true;
-                    service.storeValue(value, null, set_prefix, set_index, value.collection_index);
-                }
-            });
-        });
 
         // recursively delete questionsets of this questionset
         angular.forEach(questionset.questionsets, function(qs) {
             var sp = service.joinSetPrefix(set_prefix, set_index);
 
             // loop over a copy of the valueset, since elements are removed during the iteration
-            angular.forEach(angular.copy(service.valuesets[qs.id][sp]), function (si) {
+            angular.forEach(angular.copy(service.valuesets[qs.id][sp]), function (v, si) {
                 service.removeValueSet(qs, sp, si);
             });
         });
