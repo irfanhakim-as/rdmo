@@ -1,4 +1,8 @@
+import re
+
 from django.utils.translation import gettext_lazy as _
+
+SITE_ID = 1
 
 DEBUG = False
 
@@ -85,19 +89,23 @@ AUTHENTICATION_BACKENDS = [
 
 MULTISITE = False
 
+GROUPS = False
+
+LOGIN_FORM = True
+
 PROFILE_UPDATE = True
 PROFILE_DELETE = True
 
 ACCOUNT = False
 ACCOUNT_SIGNUP = False
+ACCOUNT_GROUPS = []
 ACCOUNT_TERMS_OF_USE = False
+ACCOUNT_ADAPTER = 'rdmo.accounts.adapter.AccountAdapter'
+ACCOUNT_FORMS = {
+    'login': 'rdmo.accounts.forms.LoginForm',
+    'signup': 'rdmo.accounts.forms.SignupForm'
 
-SOCIALACCOUNT = False
-
-SHIBBOLETH = False
-SHIBBOLETH_LOGOUT_URL = '/Shibboleth.sso/Logout'
-
-ACCOUNT_SIGNUP_FORM_CLASS = 'rdmo.accounts.forms.SignupForm'
+}
 ACCOUNT_USER_DISPLAY = 'rdmo.accounts.utils.get_full_name'
 ACCOUNT_EMAIL_REQUIRED = True
 ACCOUNT_ACTIVATION_DAYS = 7
@@ -107,12 +115,20 @@ ACCOUNT_LOGIN_ON_EMAIL_CONFIRMATION = False
 ACCOUNT_USERNAME_MIN_LENGTH = 4
 ACCOUNT_PASSWORD_MIN_LENGTH = 4
 ACCOUNT_EMAIL_MAX_LENGTH = 190
+ACCOUNT_PREVENT_ENUMERATION = False
+ACCOUNT_ALLOW_USER_TOKEN = False
 
-ACCOUNT_ADAPTER = 'rdmo.accounts.adapter.AccountAdapter'
-
-SOCIALACCOUNT_ADAPTER = 'rdmo.accounts.adapter.SocialAccountAdapter'
+SOCIALACCOUNT = False
 SOCIALACCOUNT_SIGNUP = False
+SOCIALACCOUNT_GROUPS = []
 SOCIALACCOUNT_AUTO_SIGNUP = False
+SOCIALACCOUNT_ADAPTER = 'rdmo.accounts.adapter.SocialAccountAdapter'
+SOCIALACCOUNT_OPENID_CONNECT_URL_PREFIX = ""  # required since 0.60.0 else default is "oidc"
+
+SHIBBOLETH = False
+SHIBBOLETH_LOGIN_URL = '/Shibboleth.sso/Login'
+SHIBBOLETH_LOGOUT_URL = '/Shibboleth.sso/Logout'
+SHIBBOLETH_USERNAME_PATTERN = None
 
 LANGUAGE_CODE = 'en-us'
 
@@ -124,8 +140,6 @@ LANGUAGES = (
 )
 
 USE_I18N = True
-
-USE_L10N = True
 
 USE_TZ = True
 
@@ -171,16 +185,21 @@ REST_FRAMEWORK = {
 }
 
 SETTINGS_EXPORT = [
+    'SITE_ID',
     'LOGIN_URL',
     'LOGOUT_URL',
+    'LOGIN_FORM',
     'ACCOUNT',
     'ACCOUNT_SIGNUP',
     'ACCOUNT_TERMS_OF_USE',
+    'ACCOUNT_ALLOW_USER_TOKEN',
     'SOCIALACCOUNT',
     'PROFILE_UPDATE',
     'PROFILE_DELETE',
     'SHIBBOLETH',
+    'SHIBBOLETH_LOGIN_URL',
     'MULTISITE',
+    'GROUPS',
     'EXPORT_FORMATS',
     'PROJECT_ISSUES',
     'PROJECT_VIEWS',
@@ -195,7 +214,12 @@ SETTINGS_EXPORT = [
 SETTINGS_API = [
     'PROJECT_QUESTIONS_AUTOSAVE',
     'PROJECT_QUESTIONS_CYCLE_SETS',
-    'DEFAULT_URI_PREFIX'
+    'DEFAULT_URI_PREFIX',
+    'LANGUAGES',
+    'MULTISITE',
+    'GROUPS',
+    'EXPORT_FORMATS',
+    'PROJECT_TABLE_PAGE_SIZE'
 ]
 
 EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
@@ -210,7 +234,8 @@ OVERLAYS = {
     'projects': [
         'projects-table',
         'create-project',
-        'import-project'
+        'import-project',
+        'support-info'
     ],
     'project': [
         'project-questions',
@@ -220,11 +245,13 @@ OVERLAYS = {
         'project-memberships',
         'project-snapshots',
         'export-project',
-        'import-project'
+        'import-project',
+        'support-info'
     ],
     'issue_send': [
         'issue-message',
-        'issue-attachments'
+        'issue-attachments',
+        'support-info'
     ]
 }
 
@@ -245,9 +272,13 @@ EXPORT_REFERENCE_ODT = None
 EXPORT_REFERENCE_DOCX = None
 
 EXPORT_PANDOC_ARGS = {
-    'pdf': ['-V', 'geometry:margin=1in', '--pdf-engine=xelatex'],
+    'pdf': ['-V', 'geometry:a4paper, margin=1in', '--pdf-engine=xelatex'],
     'rtf': ['--standalone']
 }
+
+EXPORT_CONTENT_DISPOSITION = 'attachment'
+
+PROJECT_TABLE_PAGE_SIZE = 20
 
 PROJECT_ISSUES = True
 
@@ -257,8 +288,9 @@ PROJECT_VIEWS = True
 
 PROJECT_EXPORTS = [
     ('xml', _('RDMO XML'), 'rdmo.projects.exports.RDMOXMLExport'),
-    ('csvcomma', _('CSV comma separated'), 'rdmo.projects.exports.CSVCommaExport'),
-    ('csvsemicolon', _('CSV semicolon separated'), 'rdmo.projects.exports.CSVSemicolonExport')
+    ('csvcomma', _('CSV (comma separated)'), 'rdmo.projects.exports.CSVCommaExport'),
+    ('csvsemicolon', _('CSV (semicolon separated)'), 'rdmo.projects.exports.CSVSemicolonExport'),
+    ('json', _('JSON'), 'rdmo.projects.exports.JSONExport'),
 ]
 
 PROJECT_IMPORTS = [
@@ -267,7 +299,7 @@ PROJECT_IMPORTS = [
 
 PROJECT_IMPORTS_LIST = []
 
-PROJECT_QUESTIONS_AUTOSAVE = False
+PROJECT_QUESTIONS_AUTOSAVE = True
 
 PROJECT_QUESTIONS_CYCLE_SETS = False
 
@@ -279,9 +311,66 @@ PROJECT_INVITE_TIMEOUT = None
 
 PROJECT_SEND_INVITE = True
 
+PROJECT_REMOVE_VIEWS = True
+
+PROJECT_CREATE_RESTRICTED = False
+PROJECT_CREATE_GROUPS = []
+
+PROJECT_VALUES_CONFLICT_THRESHOLD = 0.01
+
 NESTED_PROJECTS = True
 
 OPTIONSET_PROVIDERS = []
+
+PROJECT_VALUES_VALIDATION = False
+
+PROJECT_VALUES_VALIDATION_URL = True
+
+PROJECT_VALUES_VALIDATION_INTEGER = True
+PROJECT_VALUES_VALIDATION_INTEGER_MESSAGE = _('Enter a valid integer.')
+PROJECT_VALUES_VALIDATION_INTEGER_REGEX = re.compile(r'^[+-]?\d+$')
+
+PROJECT_VALUES_VALIDATION_FLOAT = True
+PROJECT_VALUES_VALIDATION_FLOAT_MESSAGE = _('Enter a valid float.')
+PROJECT_VALUES_VALIDATION_FLOAT_REGEX = re.compile(r'''
+    ^[+-]?            # Optional sign
+    (
+        \d+           # Digits before the decimal or thousands separator
+        (,\d{3})*     # Optional groups of exactly three digits preceded by a comma (thousands separator)
+        (\.\d+)?      # Optional decimal part, a dot followed by one or more digits
+        |             # OR
+        \d+           # Digits before the decimal or thousands separator
+        (\.\d{3})*    # Optional groups of exactly three digits preceded by a dot (thousands separator)
+        (,\d+)?       # Optional decimal part, a comma followed by one or more digits
+    )
+    ([eE][+-]?\d+)?$  # Optional exponent part
+''', re.VERBOSE)
+
+PROJECT_VALUES_VALIDATION_BOOLEAN = True
+PROJECT_VALUES_VALIDATION_BOOLEAN_MESSAGE = _('Enter a valid boolean (e.g. 0, 1).')
+PROJECT_VALUES_VALIDATION_BOOLEAN_REGEX = r'(?i)^(0|1|f|t|false|true)$'
+
+PROJECT_VALUES_VALIDATION_DATE = True
+PROJECT_VALUES_VALIDATION_DATE_MESSAGE = _('Enter a valid date (e.g. "02.03.2024", "03/02/2024", "2024-02-03").')
+PROJECT_VALUES_VALIDATION_DATE_REGEX = re.compile(r'''
+    ^(
+        \d{1,2}\.\s*\d{1,2}\.\s*\d{2,4}  # Format dd.mm.yyyy
+        | \d{1,2}/\d{1,2}/\d{4}          # Format mm/dd/yyyy
+        | \d{4}-\d{2}-\d{2}              # Format yyyy-mm-dd
+    )$
+''', re.VERBOSE)
+
+PROJECT_VALUES_VALIDATION_DATETIME = True
+
+PROJECT_VALUES_VALIDATION_EMAIL = True
+
+PROJECT_VALUES_VALIDATION_PHONE = True
+PROJECT_VALUES_VALIDATION_PHONE_MESSAGE = _('Enter a valid phone number (e.g. "123456" or "+49 (0) 30 123456").')
+PROJECT_VALUES_VALIDATION_PHONE_REGEX = re.compile(r'''
+    ^([+]\d{2,3}\s)?  # Optional country code
+    (\(\d+\)\s)?      # Optional area code in parentheses
+    [\d\s]*$          # Main number with spaces
+''', re.VERBOSE)
 
 QUESTIONS_WIDGETS = [
     ('text', _('Text'), 'rdmo.projects.widgets.TextWidget'),
@@ -291,12 +380,15 @@ QUESTIONS_WIDGETS = [
     ('radio', _('Radio buttons'), 'rdmo.projects.widgets.RadioWidget'),
     ('select', _('Select drop-down'), 'rdmo.projects.widgets.SelectWidget'),
     ('autocomplete', _('Autocomplete'), 'rdmo.projects.widgets.AutocompleteWidget'),
+    ('freeautocomplete', _('Free autocomplete'), 'rdmo.projects.widgets.FreeAutocompleteWidget'),
     ('range', _('Range slider'), 'rdmo.projects.widgets.RangeWidget'),
     ('date', _('Date picker'), 'rdmo.projects.widgets.DateWidget'),
     ('file', _('File upload'), 'rdmo.projects.widgets.FileWidget')
 ]
 
 DEFAULT_URI_PREFIX = 'http://example.com/terms'
+
+REPLACE_MISSING_TRANSLATION = False
 
 VENDOR_CDN = True
 
@@ -458,5 +550,5 @@ VENDOR = {
     }
 }
 
-# necessary since django 3.2, explicitly set primary key type to avaoid warnings
+# necessary since django 3.2, explicitly set primary key type to avoid warnings
 DEFAULT_AUTO_FIELD = 'django.db.models.AutoField'

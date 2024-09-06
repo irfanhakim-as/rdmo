@@ -1,114 +1,162 @@
-from rdmo.conditions.imports import import_condition
-from rdmo.core.constants import PERMISSIONS
-from rdmo.domain.imports import fetch_attribute_parents, import_attribute
-from rdmo.options.imports import (fetch_option_parents, import_option,
-                                  import_optionset)
-from rdmo.questions.imports import (fetch_question_parents,
-                                    fetch_questionset_parents,
-                                    fetch_section_parents, import_catalog,
-                                    import_question, import_questionset,
-                                    import_section)
-from rdmo.tasks.imports import import_task
-from rdmo.views.imports import import_view
+import copy
+import logging
+from collections import OrderedDict
+from typing import Dict, List, Optional
+
+from django.conf import settings
+from django.contrib.sites.shortcuts import get_current_site
+from django.http import HttpRequest
+
+from rdmo.conditions.imports import import_helper_condition
+from rdmo.core.imports import (
+    ImportElementFields,
+    check_permissions,
+    get_or_return_instance,
+    make_import_info_msg,
+    validate_instance,
+)
+from rdmo.core.xml import order_elements
+from rdmo.domain.imports import import_helper_attribute
+from rdmo.management.import_utils import (
+    add_current_site_to_sites_and_editor,
+    apply_field_values,
+    initialize_and_clean_import_element_dict,
+    initialize_import_element_dict,
+    is_valid_import_element,
+    strip_uri_prefix_endswith_slash,
+    update_extra_fields_from_validated_instance,
+    update_related_fields,
+)
+from rdmo.options.imports import import_helper_option, import_helper_optionset
+from rdmo.questions.imports import (
+    import_helper_catalog,
+    import_helper_page,
+    import_helper_question,
+    import_helper_questionset,
+    import_helper_section,
+)
+from rdmo.tasks.imports import import_helper_task
+from rdmo.views.imports import import_helper_view
+
+logger = logging.getLogger(__name__)
+
+ELEMENT_IMPORT_HELPERS = {
+    "domain.attribute": import_helper_attribute,
+    "options.option": import_helper_option,
+    "conditions.condition": import_helper_condition,
+    "options.optionset": import_helper_optionset,
+    "questions.question": import_helper_question,
+    "questions.questionset": import_helper_questionset,
+    "questions.section": import_helper_section,
+    "questions.page": import_helper_page,
+    "questions.catalog": import_helper_catalog,
+    "tasks.task": import_helper_task,
+    "views.view": import_helper_view
+}
 
 
-def check_permissions(elements, user):
-    element_types = set([element.get('type') for element in elements])
+def import_elements(uploaded_elements: OrderedDict,
+                    save: bool = True,
+                    request: Optional[HttpRequest] = None) -> List[Dict]:
+    imported_elements = []
+    uploaded_elements_initial_ordering = {uri: n for n, uri in enumerate(uploaded_elements.keys())}
+    uploaded_uris = set(uploaded_elements.keys())
+    current_site = get_current_site(request)
+    if save:
+        # when saving, the elements are ordered according to the rdmo models
+        pass
+        uploaded_elements = order_elements(uploaded_elements)
 
-    permissions = []
-    for element_type in element_types:
-        permissions += PERMISSIONS[element_type]
+    for _uri, uploaded_element in uploaded_elements.items():
+        if not is_valid_import_element(uploaded_element):
+            continue
+        element = import_element(
+            element=uploaded_element,
+            save=save,
+            request=request,
+            current_site=current_site
+        )
+        element[ImportElementFields.WARNINGS] = {
+            k: val for
+            k, val in element[ImportElementFields.WARNINGS].items()
+            if k not in uploaded_uris
+        }
+        imported_elements.append(element)
 
-    return user.has_perms(permissions)
+    # sort elements back to initial order of uploaded elements
+    imported_elements = sorted(
+        imported_elements,
+        key=lambda x: uploaded_elements_initial_ordering.get(x['uri'],
+        float('inf'))
+    )
+
+    return imported_elements
 
 
-def get_parent_uri(element_uri, parent_uri, parents, uris):
-    if element_uri in parents and parents[element_uri]:
-        # parent was explicitely selected
-        return parents[element_uri]
-    elif parent_uri in uris:
-        # parent uri was changed during the import
-        return uris[parent_uri]
-    else:
-        # needs to be False, to use parent uri in file
-        return False
+def import_element(
+        element: Optional[Dict] = None,
+        save: bool = True,
+        request: Optional[HttpRequest] = None,
+        current_site = None
+    ) -> Dict:
 
+    initialize_import_element_dict(element)
 
-def import_elements(elements, parents={}, save={}):
-    instances = []
-    uris = {}
+    import_helper = ELEMENT_IMPORT_HELPERS[element['model']]
 
-    for element in elements:
-        element_type = element.get('type')
-        save_element = save.get(element.get('uri'))
+    uri = element.get('uri')
 
-        # step 1: get create model for elements
-        if element_type == 'condition':
-            instance = import_condition(element, save=save_element)
+    element, _excluded_data = initialize_and_clean_import_element_dict(element, import_helper.model)
 
-        elif element_type == 'attribute':
-            parent_uri = get_parent_uri(element.get('uri'), element.get('parent'), parents, uris)
-            instance = import_attribute(element, parent_uri=parent_uri, save=save_element)
+    # get or create instance from uri and model
+    instance, created = get_or_return_instance(import_helper.model, uri=uri)
 
-        elif element_type == 'optionset':
-            instance = import_optionset(element, save=save_element)
+    # keep a copy of the original
+    # when the element is updated
+    # needs to be created here, else the changes will be overwritten
+    original = copy.deepcopy(instance) if not created else None
 
-        elif element_type == 'option':
-            optionset_uri = get_parent_uri(element.get('uri'), element.get('optionset'), parents, uris)
-            instance = import_option(element, optionset_uri=optionset_uri, save=save_element)
+    # prepare a log message
+    msg = make_import_info_msg(import_helper.model._meta.verbose_name, created, uri=uri)
 
-        elif element_type == 'catalog':
-            instance = import_catalog(element, save=save_element)
+    # check the change or add permissions for the user on the instance
+    user = request.user if request is not None else None
+    perms_error_msg = check_permissions(instance, uri, user)
+    if perms_error_msg:
+        # when there is an error msg, the import can be stopped and return
+        element[ImportElementFields.ERRORS].append(perms_error_msg)
+        return element
 
-        elif element_type == 'section':
-            catalog_uri = get_parent_uri(element.get('uri'), element.get('catalog'), parents, uris)
-            instance = import_section(element, catalog_uri=catalog_uri, save=save_element)
+    element[ImportElementFields.CREATED] = created
+    element[ImportElementFields.UPDATED] = not created and original is not None
+    # INFO: the dict element[FieldNames.diff.value] is filled by calling track_changes_on_element
 
-        elif element_type == 'questionset':
-            section_uri = get_parent_uri(element.get('uri'), element.get('section'), parents, uris)
-            questionset_uri = get_parent_uri(element.get('uri'), element.get('questionset'), {}, uris)
-            instance = import_questionset(element, section_uri=section_uri, questionset_uri=questionset_uri, save=save_element)
+    element = strip_uri_prefix_endswith_slash(element)
+    # start to set values on the instance
+    apply_field_values(instance, element, import_helper, original)
 
-        elif element_type == 'question':
-            questionset_uri = get_parent_uri(element.get('uri'), element.get('questionset'), parents, uris)
-            instance = import_question(element, questionset_uri=questionset_uri, save=save_element)
+    # call the validators on the instance
+    validate_instance(instance, element, *import_helper.validators)
 
-        elif element_type == 'task':
-            instance = import_task(element, save=save_element)
+    update_extra_fields_from_validated_instance(instance, element, import_helper, original=original)
 
-        elif element_type == 'view':
-            instance = import_view(element, save=save_element)
+    if element.get(ImportElementFields.ERRORS):
+        # when there is an error msg, the import can be stopped and return
+        if save:
+            element[ImportElementFields.CREATED] = False
+            element[ImportElementFields.UPDATED] = False
+        return element
 
-        else:
-            instance = None
+    if save:
+        logger.info(msg)
+        instance.save()
 
-        # step 2: fetch available parents
-        if instance:
-            if not save:
-                if element_type == 'attribute':
-                    instance.parents = fetch_attribute_parents(instances)
+        update_related_fields(instance, element, import_helper, original, save)
 
-                elif element.get('type') == 'option':
-                    instance.parents = fetch_option_parents(instances)
+        if created and settings.MULTISITE:
+            add_current_site_to_sites_and_editor(instance, current_site, import_helper)
 
-                elif element.get('type') == 'section':
-                    instance.parents = fetch_section_parents(instances)
+    elif not created:  # when an element will be updated but not saved
+        update_related_fields(instance, element, import_helper, original, save)
 
-                elif element.get('type') == 'questionset':
-                    instance.parents = fetch_questionset_parents(instances)
-
-                elif element.get('type') == 'question':
-                    instance.parents = fetch_question_parents(instances)
-
-                # check if a missing element was already imported
-                for uri in instance.missing:
-                    if uri in [instance.uri for instance in instances]:
-                        instance.missing[uri]['in_file'] = True
-
-            # append the instance to the list of instances
-            instances.append(instance)
-
-            if element.get('uri') != instance.uri:
-                uris[element.get('uri')] = instance.uri
-
-    return instances
+    return element

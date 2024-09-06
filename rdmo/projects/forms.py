@@ -12,26 +12,40 @@ from rdmo.core.plugins import get_plugin
 from rdmo.core.utils import markdown2html
 
 from .constants import ROLE_CHOICES
-from .models import (Integration, IntegrationOption, Invite, Membership,
-                     Project, Snapshot)
+from .models import Integration, IntegrationOption, Invite, Membership, Project, Snapshot
 
 
 class CatalogChoiceField(forms.ModelChoiceField):
 
+    _unavailable_icon = ' (<span class="fa fa-eye-slash" aria-hidden="true"></span>)'
+
     def label_from_instance(self, obj):
-        return mark_safe('<b>%s</b></br>%s' % (obj.title, markdown2html(obj.help)))
+        rendered_title = markdown2html(obj.title)
+        rendered_help = markdown2html(obj.help)
+
+        if obj.available is False:
+            return mark_safe(f'<div class="text-muted"><p>{rendered_title}{self._unavailable_icon}</p>'
+                             f'<p>{rendered_help}</p></div>')
+
+        return mark_safe(f'<p><b>{rendered_title}</b></p><p>{rendered_help}</p>')
 
 
 class TasksMultipleChoiceField(forms.ModelMultipleChoiceField):
 
     def label_from_instance(self, obj):
-        return mark_safe('<b>%s</b></br>%s' % (obj.title, markdown2html(obj.text)))
+        rendered_title = markdown2html(obj.title)
+        rendered_text = markdown2html(obj.text)
+
+        return mark_safe(f'<b>{rendered_title}</b></br>{rendered_text}')
 
 
 class ViewsMultipleChoiceField(forms.ModelMultipleChoiceField):
 
     def label_from_instance(self, obj):
-        return mark_safe('<b>%s</b></br>%s' % (obj.title, markdown2html(obj.help)))
+        rendered_title = markdown2html(obj.title)
+        rendered_help = markdown2html(obj.help)
+
+        return mark_safe(f'<b>{rendered_title}</b></br>{rendered_help}')
 
 
 class ProjectForm(forms.ModelForm):
@@ -161,20 +175,20 @@ class SnapshotCreateForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         self.project = kwargs.pop('project')
-        super(SnapshotCreateForm, self).__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
 
     def save(self, *args, **kwargs):
         self.instance.project = self.project
-        return super(SnapshotCreateForm, self).save(*args, **kwargs)
+        return super().save(*args, **kwargs)
 
 
 class MembershipCreateForm(forms.Form):
 
     use_required_attribute = False
 
-    username_or_email = forms.CharField(widget=forms.TextInput(attrs={'placeholder': _('Username or email')}),
+    username_or_email = forms.CharField(widget=forms.TextInput(attrs={'placeholder': _('Username or e-mail')}),
                                         label=_('User'),
-                                        help_text=_('The username or email of the new user.'))
+                                        help_text=_('The username or e-mail of the new user.'))
     role = forms.CharField(widget=forms.RadioSelect(choices=ROLE_CHOICES),
                            initial='author')
 
@@ -187,21 +201,24 @@ class MembershipCreateForm(forms.Form):
             self.fields['silent'] = forms.BooleanField(
                 required=False,
                 label=_('Add member silently'),
-                help_text=_('As site manager or admin, you can directly add users without notifying them via email, when you check the following checkbox.')
+                help_text=_('As site manager or admin, you can directly add users without notifying them via e-mail, '
+                            'when you check the following checkbox.')
             )
 
     def clean_username_or_email(self):
         username_or_email = self.cleaned_data['username_or_email']
+        usermodel = get_user_model()
 
-        # check if it is a registered
+        # check if it is a registered user
         try:
-            self.cleaned_data['user'] = get_user_model().objects.get(Q(username=username_or_email) | Q(email__iexact=username_or_email))
+            self.cleaned_data['user'] = usermodel.objects.get(Q(username=username_or_email) |
+                                                              Q(email__iexact=username_or_email))
             self.cleaned_data['email'] = self.cleaned_data['user'].email
 
             if self.cleaned_data['user'] in self.project.user.all():
                 raise ValidationError(_('The user is already a member of the project.'))
 
-        except get_user_model().DoesNotExist:
+        except (usermodel.DoesNotExist, usermodel.MultipleObjectsReturned) as e:
             if settings.PROJECT_SEND_INVITE:
                 # check if it is a valid email address, this will raise the correct ValidationError
                 EmailValidator()(username_or_email)
@@ -211,7 +228,8 @@ class MembershipCreateForm(forms.Form):
             else:
                 self.cleaned_data['user'] = None
                 self.cleaned_data['email'] = None
-                raise ValidationError(_('A user with this username or email was not found. Only registered users can be invited.'))
+                raise ValidationError(_('A user with this username or e-mail was not found. '
+                                        'Only registered users can be invited.')) from e
 
     def clean(self):
         if self.cleaned_data.get('silent') is True and self.cleaned_data.get('user') is None:
@@ -256,15 +274,22 @@ class IntegrationForm(forms.ModelForm):
 
         # add fields for the integration options
         for field in self.provider.fields:
-            try:
-                initial = IntegrationOption.objects.get(integration=self.instance, key=field.get('key')).value
-            except IntegrationOption.DoesNotExist:
+            # new integration instance is going to be created
+            if self.instance.pk is None:
                 initial = None
+            # existing integration is going to be updated
+            else:
+                try:
+                    initial = IntegrationOption.objects.get(integration=self.instance, key=field.get('key')).value
+                except IntegrationOption.DoesNotExist:
+                    initial = None
 
             if field.get('placeholder'):
                 attrs = {'placeholder': field.get('placeholder')}
+
             self.fields[field.get('key')] = forms.CharField(widget=forms.TextInput(attrs=attrs),
-                                                            initial=initial, required=field.get('required', True))
+                                                            initial=initial, required=field.get('required', True),
+                                                            help_text=field.get('help'))
 
     def save(self):
         # the the project and the provider_key

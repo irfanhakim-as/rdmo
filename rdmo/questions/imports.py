@@ -1,182 +1,141 @@
-import logging
+from rdmo.core.import_helpers import ElementImportHelper, ExtraFieldHelper, ThroughInstanceMapper
 
-from django.contrib.sites.models import Site
+from ..core.constants import VALUE_TYPE_TEXT
+from .models import Catalog, Page, Question, QuestionSet, Section
+from .utils import get_widget_type_or_default
+from .validators import (
+    CatalogLockedValidator,
+    CatalogUniqueURIValidator,
+    PageLockedValidator,
+    PageUniqueURIValidator,
+    QuestionLockedValidator,
+    QuestionSetLockedValidator,
+    QuestionSetUniqueURIValidator,
+    QuestionUniqueURIValidator,
+    SectionLockedValidator,
+    SectionUniqueURIValidator,
+)
 
-from rdmo.conditions.models import Condition
-from rdmo.core.imports import (fetch_parents, get_foreign_field,
-                               get_m2m_instances, set_common_fields,
-                               set_lang_field, validate_instance)
-from rdmo.domain.models import Attribute
-from rdmo.options.models import Option, OptionSet
+import_helper_catalog = ElementImportHelper(
+    model=Catalog,
+    validators=(CatalogLockedValidator, CatalogUniqueURIValidator),
+    lang_fields=('title', 'help'),
+    extra_fields=(
+        ExtraFieldHelper(field_name='order'),
+        ExtraFieldHelper(field_name='available', overwrite_in_element=True),
+    ),
+    m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='sections', source_name='catalog',
+            target_name='section', through_name='catalog_sections'
+        )
+    ],
+    add_current_site_sites = True,
+)
 
-from .models import Catalog, Question, QuestionSet, Section
-from .validators import (CatalogLockedValidator, CatalogUniqueURIValidator,
-                         QuestionLockedValidator, QuestionSetLockedValidator,
-                         QuestionSetUniqueURIValidator,
-                         QuestionUniqueURIValidator, SectionLockedValidator,
-                         SectionUniqueURIValidator)
-from .utils import get_widget_types
+import_helper_section = ElementImportHelper(
+    model=Section,
+    validators=(SectionLockedValidator, SectionUniqueURIValidator),
+    lang_fields=('title', 'short_title'),
+    m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='pages', source_name='section',
+            target_name='page', through_name='section_pages'
+        )
+    ],
+    reverse_m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='catalog', source_name='section',
+            target_name='catalog', through_name='section_catalogs'
+        )
+    ]
+)
 
-logger = logging.getLogger(__name__)
+import_helper_page = ElementImportHelper(
+    model=Page,
+    validators=(PageLockedValidator, PageUniqueURIValidator),
+    lang_fields=('help', 'title', 'verbose_name', 'short_title'),
+    foreign_fields=('attribute',),
+    extra_fields=(
+        ExtraFieldHelper(field_name='is_collection'),
+    ),
+    m2m_instance_fields=('conditions', ),
+    m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='questionsets', source_name='page',
+            target_name='questionset', through_name='page_questionsets'
+        ),
+        ThroughInstanceMapper(
+            field_name='questions', source_name='page',
+            target_name='question', through_name='page_questions'
+        )
+    ],
+    reverse_m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='section', source_name='page',
+            target_name='section', through_name='page_sections'
+        )
+    ]
+)
 
+import_helper_questionset = ElementImportHelper(
+    model=QuestionSet,
+    validators=(QuestionSetLockedValidator, QuestionSetUniqueURIValidator),
+    lang_fields=( 'title', 'help', 'verbose_name'),
+    foreign_fields=('attribute',),
+    extra_fields=(
+        ExtraFieldHelper(field_name='is_collection'),
+    ),
+    m2m_instance_fields=('conditions', ),
 
-def import_catalog(element, save=False):
-    try:
-        catalog = Catalog.objects.get(uri=element.get('uri'))
-    except Catalog.DoesNotExist:
-        catalog = Catalog()
+    m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='questionsets', source_name='parent',
+            target_name='questionset', through_name='questionset_questionsets'
+        ),
+        ThroughInstanceMapper(
+            field_name='questions', source_name='questionset',
+            target_name='question', through_name='questionset_questions'
+        )
+    ],
+    reverse_m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='page', source_name='questionset',
+            target_name='page', through_name='questionset_pages'
+        ),
+        ThroughInstanceMapper(
+            field_name='questionset', source_name='questionset',
+            target_name='parent', through_name='questionset_parents'
+        )
+    ]
+)
 
-    set_common_fields(catalog, element)
-
-    catalog.order = element.get('order') or 0
-
-    set_lang_field(catalog, 'title', element)
-    set_lang_field(catalog, 'help', element)
-
-    if save and validate_instance(catalog, CatalogLockedValidator, CatalogUniqueURIValidator):
-        if catalog.id:
-            logger.info('Catalog created with uri %s.', element.get('uri'))
-        else:
-            logger.info('Catalog %s updated.', element.get('uri'))
-
-        catalog.save()
-        catalog.sites.add(Site.objects.get_current())
-        catalog.imported = True
-
-    return catalog
-
-
-def import_section(element, catalog_uri=False, save=False):
-    try:
-        if catalog_uri is False:
-            section = Section.objects.get(uri=element.get('uri'))
-        else:
-            section = Section.objects.get(key=element.get('key'), catalog__uri=catalog_uri)
-
-    except Section.DoesNotExist:
-        section = Section()
-
-    set_common_fields(section, element)
-
-    section.catalog = get_foreign_field(section, catalog_uri or element.get('catalog'), Catalog)
-    section.order = element.get('order') or 0
-
-    set_lang_field(section, 'title', element)
-
-    if save and validate_instance(section, SectionLockedValidator, SectionUniqueURIValidator):
-        if section.id:
-            logger.info('Section created with uri %s.', element.get('uri'))
-        else:
-            logger.info('Section %s updated.', element.get('uri'))
-
-        section.save()
-        section.imported = True
-
-    return section
-
-
-def import_questionset(element, section_uri=False, questionset_uri=False, save=False):
-    try:
-        if section_uri is False:
-            questionset = QuestionSet.objects.get(uri=element.get('uri'))
-        else:
-            if questionset_uri is False:
-                questionset = QuestionSet.objects.get(key=element.get('key'), section__uri=section_uri)
-            else:
-                questionset = QuestionSet.objects.get(key=element.get('key'), section__uri=section_uri, questionset__uri=questionset_uri)
-
-    except QuestionSet.DoesNotExist:
-        questionset = QuestionSet()
-
-    set_common_fields(questionset, element)
-
-    questionset.section = get_foreign_field(questionset, section_uri or element.get('section'), Section)
-    questionset.questionset = get_foreign_field(questionset, questionset_uri or element.get('questionset'), QuestionSet)
-    questionset.attribute = get_foreign_field(questionset, element.get('attribute'), Attribute)
-    questionset.is_collection = element.get('is_collection') or False
-    questionset.order = element.get('order') or 0
-
-    set_lang_field(questionset, 'title', element)
-    set_lang_field(questionset, 'help', element)
-    set_lang_field(questionset, 'verbose_name', element)
-    set_lang_field(questionset, 'verbose_name_plural', element)
-
-    conditions = get_m2m_instances(questionset, element.get('conditions'), Condition)
-
-    if save and validate_instance(questionset, QuestionSetLockedValidator, QuestionSetUniqueURIValidator):
-        if questionset.id:
-            logger.info('QuestionSet created with uri %s.', element.get('uri'))
-        else:
-            logger.info('QuestionSet %s updated.', element.get('uri'))
-
-        questionset.save()
-        questionset.conditions.set(conditions)
-        questionset.imported = True
-
-    return questionset
-
-
-def import_question(element, questionset_uri=False, save=False):
-    try:
-        if questionset_uri is False:
-            question = Question.objects.get(uri=element.get('uri'))
-        else:
-            question = Question.objects.get(key=element.get('key'), questionset__uri=questionset_uri)
-    except Question.DoesNotExist:
-        question = Question()
-
-    set_common_fields(question, element)
-
-    question.questionset = get_foreign_field(question, questionset_uri or element.get('questionset'), QuestionSet)
-    question.attribute = get_foreign_field(question, element.get('attribute'), Attribute)
-    question.is_collection = element.get('is_collection') or False
-    question.is_optional = element.get('is_optional') or False
-    question.order = element.get('order') or 0
-
-    set_lang_field(question, 'text', element)
-    set_lang_field(question, 'help', element)
-    set_lang_field(question, 'default_text', element)
-    set_lang_field(question, 'verbose_name', element)
-    set_lang_field(question, 'verbose_name_plural', element)
-
-    question.default_option = get_foreign_field(question, element.get('default_option'), Option)
-    question.default_external_id = element.get('default_external_id') or ''
-
-    if element.get('widget_type') in get_widget_types():
-        question.widget_type = element.get('widget_type')
-    else:
-        question.widget_type = 'text'
-    question.value_type = element.get('value_type') or ''
-    question.maximum = element.get('maximum')
-    question.minimum = element.get('minimum')
-    question.step = element.get('step')
-    question.unit = element.get('unit') or ''
-    question.width = element.get('width')
-
-    conditions = get_m2m_instances(question, element.get('conditions'), Condition)
-    optionsets = get_m2m_instances(question, element.get('optionsets'), OptionSet)
-
-    if save and validate_instance(question, QuestionLockedValidator, QuestionUniqueURIValidator):
-        if question.id:
-            logger.info('Question created with uri %s.', element.get('uri'))
-        else:
-            logger.info('Question %s updated.', element.get('uri'))
-
-        question.save()
-        question.conditions.set(conditions)
-        question.optionsets.set(optionsets)
-        question.imported = True
-
-    return question
-
-
-def fetch_section_parents(instances):
-    return fetch_parents(Catalog, instances)
-
-
-def fetch_questionset_parents(instances):
-    return fetch_parents(Section, instances)
-
-
-def fetch_question_parents(instances):
-    return fetch_parents(QuestionSet, instances)
+import_helper_question = ElementImportHelper(
+    model=Question,
+    validators=(QuestionLockedValidator, QuestionUniqueURIValidator),
+    lang_fields=('text', 'help', 'default_text', 'verbose_name'),
+    foreign_fields=('attribute', 'default_option'),
+    extra_fields=(
+        ExtraFieldHelper(field_name='is_collection'),
+        ExtraFieldHelper(field_name='is_optional'),
+        ExtraFieldHelper(field_name='default_external_id', value=''),
+        ExtraFieldHelper(field_name='widget_type', callback=get_widget_type_or_default),
+        ExtraFieldHelper(field_name='value_type', value=VALUE_TYPE_TEXT),
+        ExtraFieldHelper(field_name='minimum'),
+        ExtraFieldHelper(field_name='maximum'),
+        ExtraFieldHelper(field_name='step'),
+        ExtraFieldHelper(field_name='unit', value=''),
+        ExtraFieldHelper(field_name='width'),
+    ),
+    m2m_instance_fields=('conditions', 'optionsets'),
+    reverse_m2m_through_instance_fields=[
+        ThroughInstanceMapper(
+            field_name='page', source_name='question',
+            target_name='page', through_name='question_pages'
+        ),
+        ThroughInstanceMapper(
+            field_name='questionset', source_name='question',
+            target_name='questionset', through_name='question_questionsets'
+        )
+    ]
+)

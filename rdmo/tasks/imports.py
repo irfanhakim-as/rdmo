@@ -1,48 +1,18 @@
-import logging
-
-from django.contrib.sites.models import Site
-from rdmo.conditions.models import Condition
-from rdmo.core.imports import (get_foreign_field, get_m2m_instances,
-                               set_common_fields, set_lang_field,
-                               validate_instance)
-from rdmo.domain.models import Attribute
-from rdmo.questions.models import Catalog
+from rdmo.core.import_helpers import ElementImportHelper, ExtraFieldHelper
 
 from .models import Task
+from .validators import TaskLockedValidator, TaskUniqueURIValidator
 
-logger = logging.getLogger(__name__)
-
-
-def import_task(element, save=False):
-    try:
-        task = Task.objects.get(uri=element.get('uri'))
-    except Task.DoesNotExist:
-        task = Task()
-
-    set_common_fields(task, element)
-
-    set_lang_field(task, 'title', element)
-    set_lang_field(task, 'text', element)
-
-    task.start_attribute = get_foreign_field(task, element.get('start_attribute'), Attribute)
-    task.end_attribute = get_foreign_field(task, element.get('end_attribute'), Attribute)
-
-    task.days_before = element.get('days_before')
-    task.days_after = element.get('days_after')
-
-    conditions = get_m2m_instances(task, element.get('conditions'), Condition)
-    catalogs = get_m2m_instances(task, element.get('catalogs'), Catalog)
-
-    if save and validate_instance(task):
-        if task.id:
-            logger.info('Task created with uri %s.', element.get('uri'))
-        else:
-            logger.info('Task %s updated.', element.get('uri'))
-
-        task.save()
-        task.sites.add(Site.objects.get_current())
-        task.catalogs.set(catalogs)
-        task.conditions.set(conditions)
-        task.imported = True
-
-    return task
+import_helper_task = ElementImportHelper(
+    model=Task,
+    validators=(TaskLockedValidator, TaskUniqueURIValidator),
+    lang_fields=('title', 'text'),
+    foreign_fields=('start_attribute', 'end_attribute'),
+    extra_fields=(
+        ExtraFieldHelper(field_name='order'),
+        ExtraFieldHelper(field_name='days_before'),
+        ExtraFieldHelper(field_name='days_after'),
+        ExtraFieldHelper(field_name='available', overwrite_in_element=True),
+    ),
+    m2m_instance_fields=('catalogs', 'conditions'),
+)

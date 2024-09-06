@@ -4,7 +4,7 @@
 
 {% has_perm 'projects.change_project_object' request.user project as can_change_project %}
 
-{% if settings.PROJECT_ISSUES %}
+{% if settings.PROJECT_ISSUES and tasks_available %}
 
 <div id="project-issues">
 
@@ -33,7 +33,7 @@
                 <tr>
                     <td>
                         <a href="{% url 'issue' project.pk issue.pk %}">
-                            {{ issue.task.title }}
+                            {{ issue.task.title|markdown }}
                         </a>
                     </td>
                     <td>{{ issue.task.text|markdown }}</td>

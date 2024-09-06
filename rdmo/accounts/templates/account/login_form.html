@@ -1,25 +1,27 @@
 {% load i18n %}
 
 {% if settings.SHIBBOLETH %}
-
-    <a class="btn btn-success extend" href="{{ settings.LOGIN_URL }}">
+<p style="margin-bottom: 20px;">
+    <a class="btn btn-success extend" href="{% url 'shibboleth_login' %}">
         {% trans 'Login with Shibboleth' %}
     </a>
+</p>
+{% endif %}
 
-{% else %}
-
+{% if settings.LOGIN_FORM %}
 <form method="post" action="{% url 'account_login' %}">
     {% csrf_token %}
 
     {% if redirect_field_value %}
     <input type="hidden" name="{{ redirect_field_name }}" value="{{ redirect_field_value }}" />
+    {% elif next %}
+    <input type="hidden" name="next" value="{{ next }}" />
     {% endif %}
 
     {% include 'core/bootstrap_form_fields.html' %}
 
     <input type="submit" class="btn btn-primary" value="{% trans 'Login' %}" />
 </form>
-
 {% endif %}
 
 {% if settings.ACCOUNT %}

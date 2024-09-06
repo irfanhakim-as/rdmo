@@ -22,7 +22,7 @@
         }
     }
     h2 {
-        margin-top: 0;
+        margin-top: 70px;
     }
     .well {
         margin-top: 10px;
@@ -195,6 +195,16 @@
         margin: 0;
     }
 
+    .radio-control,
+    .checkbox-control {
+        label {
+            width: 100%;
+        }
+        .yesno label {
+            width: auto;
+        }
+    }
+
     .file-control {
         display: block;
         width: 100%;
@@ -258,6 +268,14 @@
             white-space: nowrap;
         }
     }
+
+    .breadcrumb {
+        margin-top: 20px;
+        margin-bottom: 12px;
+
+        background-color: transparent;
+        border: 1px solid #ccc;
+    }
 }
 
 .project-questions-overview {
@@ -293,4 +311,10 @@
 
 .project-progress {
     margin-bottom: 10px;
+}
+.project-progress-count {
+    position: absolute;
+    left: 0;
+    right: 0;
+    text-align: center;
 }

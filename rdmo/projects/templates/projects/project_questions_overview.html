@@ -5,11 +5,14 @@
         {% trans 'Project' %}: <a href="{% url 'project' project.id %}">{$ service.project.title $}</a>
     </li>
     <li>
-        {% trans 'Catalog' %}: {$ service.project.catalog.title $}
+        {% trans 'Catalog' %}: <span ng-bind-html="service.project.catalog.title"></span>
     </li>
 </ul>
 
 <ul class="list-unstyled">
+    <li>
+        <a href="#" onclick="window.location.reload();">{% trans 'Reload page' %}</a>
+    </li>
     <li>
         <a href="{% url 'projects' %}">{% trans 'Back to my projects' %}</a>
     </li>

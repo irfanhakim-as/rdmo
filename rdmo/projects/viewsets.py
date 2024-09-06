@@ -1,82 +1,159 @@
 from django.conf import settings
 from django.contrib.sites.shortcuts import get_current_site
-from django.db.models import Prefetch
+from django.core.exceptions import ObjectDoesNotExist
+from django.db.models import OuterRef, Prefetch, Subquery
+from django.db.models.functions import Coalesce, Greatest
 from django.http import Http404, HttpResponseRedirect
 from django.utils.translation import gettext_lazy as _
-from django_filters.rest_framework import DjangoFilterBackend
 
 from rest_framework import serializers
 from rest_framework.decorators import action
 from rest_framework.exceptions import NotFound
-from rest_framework.mixins import (CreateModelMixin, ListModelMixin,
-                                   RetrieveModelMixin, UpdateModelMixin)
+from rest_framework.mixins import CreateModelMixin, ListModelMixin, RetrieveModelMixin, UpdateModelMixin
+from rest_framework.pagination import PageNumberPagination
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.reverse import reverse
-from rest_framework.viewsets import (GenericViewSet, ModelViewSet,
-                                     ReadOnlyModelViewSet)
+from rest_framework.viewsets import GenericViewSet, ModelViewSet, ReadOnlyModelViewSet
+
+from django_filters.rest_framework import DjangoFilterBackend
 from rest_framework_extensions.mixins import NestedViewSetMixin
 
 from rdmo.conditions.models import Condition
-from rdmo.core.permissions import HasModelPermission, HasObjectPermission
+from rdmo.core.permissions import HasModelPermission
 from rdmo.core.utils import human2bytes, return_file_response
 from rdmo.options.models import OptionSet
-from rdmo.questions.models import Catalog, Question, QuestionSet
+from rdmo.questions.models import Catalog, Page, Question, QuestionSet
+from rdmo.tasks.models import Task
+from rdmo.views.models import View
 
-from .filters import SnapshotFilterBackend, ValueFilterBackend
-from .models import (Continuation, Integration, Issue, Membership, Project,
-                     Snapshot, Value)
-from .serializers.v1 import (IntegrationSerializer, IssueSerializer,
-                             MembershipSerializer,
-                             ProjectIntegrationSerializer,
-                             ProjectIssueSerializer,
-                             ProjectMembershipSerializer,
-                             ProjectMembershipUpdateSerializer,
-                             ProjectSerializer, ProjectSnapshotSerializer,
-                             ProjectValueSerializer, SnapshotSerializer,
-                             ValueSerializer)
-from .serializers.v1.overview import ProjectOverviewSerializer
-from .serializers.v1.questionset import QuestionSetSerializer
-from .utils import check_conditions
+from .filters import (
+    ProjectDateFilterBackend,
+    ProjectOrderingFilter,
+    ProjectSearchFilterBackend,
+    SnapshotFilterBackend,
+    ValueFilterBackend,
+)
+from .models import Continuation, Integration, Invite, Issue, Membership, Project, Snapshot, Value
+from .permissions import (
+    HasProjectPagePermission,
+    HasProjectPermission,
+    HasProjectProgressModelPermission,
+    HasProjectProgressObjectPermission,
+    HasProjectsPermission,
+)
+from .progress import compute_navigation, compute_progress
+from .serializers.v1 import (
+    IntegrationSerializer,
+    InviteSerializer,
+    IssueSerializer,
+    MembershipSerializer,
+    ProjectIntegrationSerializer,
+    ProjectInviteSerializer,
+    ProjectInviteUpdateSerializer,
+    ProjectIssueSerializer,
+    ProjectMembershipSerializer,
+    ProjectMembershipUpdateSerializer,
+    ProjectSerializer,
+    ProjectSnapshotSerializer,
+    ProjectValueSerializer,
+    SnapshotSerializer,
+    UserInviteSerializer,
+    ValueSerializer,
+)
+from .serializers.v1.overview import CatalogSerializer, ProjectOverviewSerializer
+from .serializers.v1.page import PageSerializer
+from .utils import check_conditions, get_upload_accept, send_invite_email
+
+
+class ProjectPagination(PageNumberPagination):
+    page_size = settings.PROJECT_TABLE_PAGE_SIZE
 
 
 class ProjectViewSet(ModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
     serializer_class = ProjectSerializer
+    pagination_class = ProjectPagination
 
-    filter_backends = (DjangoFilterBackend,)
+    filter_backends = (
+        DjangoFilterBackend,
+        ProjectDateFilterBackend,
+        ProjectOrderingFilter,
+        ProjectSearchFilterBackend,
+    )
     filterset_fields = (
         'title',
         'user',
         'user__username',
         'catalog',
-        'catalog__uri',
-        'catalog__key',
+        'catalog__uri'
+    )
+    ordering_fields = (
+        'title',
+        'progress',
+        'role',
+        'owner',
+        'updated',
+        'created',
+        'last_changed'
     )
 
     def get_queryset(self):
-        return Project.objects.filter_user(self.request.user)
+        queryset = Project.objects.filter_user(self.request.user).distinct().prefetch_related(
+            'snapshots',
+            'views',
+            Prefetch('memberships', queryset=Membership.objects.select_related('user'), to_attr='memberships_list')
+        ).select_related('catalog')
 
-    @action(detail=True, permission_classes=(IsAuthenticated, ))
+        # prepare subquery for last_changed
+        last_changed_subquery = Subquery(
+            Value.objects.filter(project=OuterRef('pk')).order_by('-updated').values('updated')[:1]
+        )
+        # the 'updated' field from a Project always returns a valid DateTime value
+        # when Greatest returns null, then Coalesce will return the value for 'updated' as a fall-back
+        # when Greatest returns a value, then Coalesce will return this value
+        queryset = queryset.annotate(last_changed=Coalesce(Greatest(last_changed_subquery, 'updated'), 'updated'))
+
+        return queryset
+
+    @action(detail=True, permission_classes=(HasModelPermission | HasProjectPermission, ))
     def overview(self, request, pk=None):
         project = self.get_object()
-        project.catalog = Catalog.objects.prefetch_related(
-            'sections',
-            Prefetch('sections__questionsets', queryset=QuestionSet.objects.filter(questionset=None).prefetch_related(
-                'conditions',
-                'questions'
-            ))
-        ).get(id=project.catalog_id)
         serializer = ProjectOverviewSerializer(project, context={'request': request})
         return Response(serializer.data)
 
-    @action(detail=True, permission_classes=(HasModelPermission | HasObjectPermission, ))
+    @action(detail=True, url_path=r'navigation/(?P<section_id>\d+)',
+            permission_classes=(HasModelPermission | HasProjectPermission, ))
+    def navigation(self, request, pk=None, section_id=None):
+        project = self.get_object()
+
+        try:
+            section = project.catalog.sections.get(pk=section_id)
+        except ObjectDoesNotExist as e:
+            raise NotFound() from e
+
+        project.catalog.prefetch_elements()
+
+        navigation = compute_navigation(section, project)
+        return Response(navigation)
+
+    @action(detail=True, permission_classes=(HasModelPermission | HasProjectPermission, ))
     def resolve(self, request, pk=None):
         snapshot_id = request.GET.get('snapshot')
         set_prefix = request.GET.get('set_prefix')
         set_index = request.GET.get('set_index')
 
         values = self.get_object().values.filter(snapshot_id=snapshot_id).select_related('attribute', 'option')
+
+        page_id = request.GET.get('page')
+        if page_id:
+            try:
+                page = Page.objects.get(id=page_id)
+                conditions = page.conditions.select_related('source', 'target_option')
+                if check_conditions(conditions, values, set_prefix, set_index):
+                    return Response({'result': True})
+            except Page.DoesNotExist:
+                pass
 
         questionset_id = request.GET.get('questionset')
         if questionset_id:
@@ -119,21 +196,34 @@ class ProjectViewSet(ModelViewSet):
 
         return Response({'result': False})
 
-    @action(detail=True, permission_classes=(HasModelPermission | HasObjectPermission, ))
+    @action(detail=True, permission_classes=(HasModelPermission | HasProjectPermission, ))
     def options(self, request, pk=None):
         project = self.get_object()
-
         try:
             try:
                 optionset_id = request.GET.get('optionset')
                 optionset = OptionSet.objects.get(pk=optionset_id)
-            except (ValueError, OptionSet.DoesNotExist):
-                raise NotFound()
+            except (ValueError, OptionSet.DoesNotExist) as e:
+                raise NotFound() from e
 
             # check if the optionset belongs to this catalog and if it has a provider
+            project.catalog.prefetch_elements()
             if Question.objects.filter_by_catalog(project.catalog).filter(optionsets=optionset) and \
                     optionset.provider is not None:
-                options = optionset.provider.get_options(project, search=request.GET.get('search'))
+                options = []
+                for option in optionset.provider.get_options(project, search=request.GET.get('search'),
+                                                             user=request.user, site=request.site):
+                    if 'id' not in option:
+                        raise RuntimeError(f"'id' is missing in options of '{optionset.provider.class_name}'")
+                    elif 'text' not in option:
+                        raise RuntimeError(f"'text' is missing in options of '{optionset.provider.class_name}'")
+                    if 'text_and_help' not in option:
+                        if 'help' in option:
+                            option['text_and_help'] = '{text} [{help}]'.format(**option)
+                        else:
+                            option['text_and_help'] = '{text}'.format(**option)
+                    options.append(option)
+
                 return Response(options)
 
         except OptionSet.DoesNotExist:
@@ -142,13 +232,61 @@ class ProjectViewSet(ModelViewSet):
         # if it didn't work return 404
         raise NotFound()
 
-    @action(detail=True, permission_classes=(IsAuthenticated, ))
+    @action(detail=True, methods=['get', 'post'],
+            permission_classes=(HasProjectProgressModelPermission | HasProjectProgressObjectPermission, ))
     def progress(self, request, pk=None):
         project = self.get_object()
-        return Response(project.progress)
+
+        if request.method == 'POST' or project.progress_count is None or project.progress_total is None:
+            # compute the progress, but store it only, if it has changed
+            project.catalog.prefetch_elements()
+            progress_count, progress_total = compute_progress(project)
+            if progress_count != project.progress_count or progress_total != project.progress_total:
+                project.progress_count, project.progress_total = progress_count, progress_total
+                project.save()
+        try:
+            ratio = project.progress_count / project.progress_total
+        except ZeroDivisionError:
+            ratio = 0
+
+        return Response({
+            'count': project.progress_count,
+            'total': project.progress_total,
+            'ratio': ratio
+        })
+
+    @action(detail=False, url_path='upload-accept', permission_classes=(IsAuthenticated, ))
+    def upload_accept(self, request):
+        return Response(get_upload_accept())
+
+    @action(detail=False, permission_classes=(IsAuthenticated, ))
+    def imports(self, request):
+        return Response([{
+            'key': key,
+            'label': label,
+            'class_name': class_name,
+            'href': reverse('project_create_import', args=[key])
+        } for key, label, class_name in settings.PROJECT_IMPORTS if key in settings.PROJECT_IMPORTS_LIST] )
 
     def perform_create(self, serializer):
         project = serializer.save(site=get_current_site(self.request))
+
+        # add all tasks to project
+        tasks = Task.objects.filter_current_site() \
+                            .filter_catalog(project.catalog) \
+                            .filter_group(self.request.user) \
+                            .filter_availability(self.request.user)
+        for task in tasks:
+            project.tasks.add(task)
+
+        if self.request.data.get('views') is None:
+            # add all views to project
+            views = View.objects.filter_current_site() \
+                                .filter_catalog(project.catalog) \
+                                .filter_group(self.request.user) \
+                                .filter_availability(self.request.user)
+            for view in views:
+                project.views.add(view)
 
         # add current user as owner
         membership = Membership(project=project, user=self.request.user, role='owner')
@@ -164,21 +302,16 @@ class ProjectNestedViewSetMixin(NestedViewSetMixin):
     def get_project_from_parent_viewset(self):
         try:
             return Project.objects.filter_user(self.request.user).get(pk=self.get_parents_query_dict().get('project'))
-        except Project.DoesNotExist:
-            raise Http404
-
-    def get_list_permission_object(self):
-        return self.project
-
-    def get_detail_permission_object(self, obj):
-        return self.project
+        except Project.DoesNotExist as e:
+            raise Http404 from e
 
     def perform_create(self, serializer):
+        # this call provides the nested serializers with the project
         serializer.save(project=self.project)
 
 
 class ProjectMembershipViewSet(ProjectNestedViewSetMixin, ModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectPermission, )
 
     filter_backends = (DjangoFilterBackend, )
     filterset_fields = (
@@ -202,7 +335,7 @@ class ProjectMembershipViewSet(ProjectNestedViewSetMixin, ModelViewSet):
 
 
 class ProjectIntegrationViewSet(ProjectNestedViewSetMixin, ModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectPermission, )
     serializer_class = ProjectIntegrationSerializer
 
     filter_backends = (DjangoFilterBackend, )
@@ -218,9 +351,39 @@ class ProjectIntegrationViewSet(ProjectNestedViewSetMixin, ModelViewSet):
             return Integration.objects.none()
 
 
+class ProjectInviteViewSet(ProjectNestedViewSetMixin, ModelViewSet):
+    permission_classes = (HasModelPermission | HasProjectPermission, )
+
+    filter_backends = (DjangoFilterBackend, )
+    filterset_fields = (
+        'user',
+        'user__username',
+        'email',
+        'role'
+    )
+
+    def get_queryset(self):
+        try:
+            return Invite.objects.filter(project=self.project)
+        except AttributeError:
+            # this is needed for the swagger ui
+            return Invite.objects.none()
+
+    def get_serializer_class(self):
+        if self.action == 'update':
+            return ProjectInviteUpdateSerializer
+        else:
+            return ProjectInviteSerializer
+
+    def perform_create(self, serializer):
+        super().perform_create(serializer)
+        if settings.PROJECT_SEND_INVITE:
+            send_invite_email(self.request, serializer.instance)
+
+
 class ProjectIssueViewSet(ProjectNestedViewSetMixin, ListModelMixin, RetrieveModelMixin,
                           UpdateModelMixin, GenericViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectPermission, )
     serializer_class = ProjectIssueSerializer
 
     filter_backends = (DjangoFilterBackend, )
@@ -240,7 +403,7 @@ class ProjectIssueViewSet(ProjectNestedViewSetMixin, ListModelMixin, RetrieveMod
 
 class ProjectSnapshotViewSet(ProjectNestedViewSetMixin, CreateModelMixin, RetrieveModelMixin,
                              UpdateModelMixin, ListModelMixin, GenericViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectPermission, )
     serializer_class = ProjectSnapshotSerializer
 
     def get_queryset(self):
@@ -252,41 +415,51 @@ class ProjectSnapshotViewSet(ProjectNestedViewSetMixin, CreateModelMixin, Retrie
 
 
 class ProjectValueViewSet(ProjectNestedViewSetMixin, ModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectPermission, )
     serializer_class = ProjectValueSerializer
 
     filter_backends = (ValueFilterBackend, DjangoFilterBackend)
     filterset_fields = (
-        'attribute__path',
+        # attribute is part of ValueFilterBackend
+        'attribute__uri',
         'option',
-        'option__path',
+        'option__uri',
     )
 
     def get_queryset(self):
         try:
-            return self.project.values.filter(snapshot=None)
+            return self.project.values.filter(snapshot=None).select_related('attribute', 'option')
         except AttributeError:
             # this is needed for the swagger ui
             return Value.objects.none()
 
     @action(detail=True, methods=['DELETE'],
-            permission_classes=(HasModelPermission | HasObjectPermission, ))
+            permission_classes=(HasModelPermission | HasProjectPermission, ))
     def set(self, request, parent_lookup_project, pk=None):
         # delete all values for questions in questionset collections with the attribute
         # for this value and the same set_prefix and set_index
         value = self.get_object()
         value.delete()
 
-        attributes = Question.objects.filter_by_catalog(self.project.catalog) \
-                                     .filter(questionset__is_collection=True, questionset__attribute=value.attribute) \
-                                     .values_list('attribute', flat=True)
-        values = self.get_queryset().filter(attribute__in=attributes, set_prefix=value.set_prefix, set_index=value.set_index)
+        # prefetch most elements of the catalog
+        self.project.catalog.prefetch_elements()
+
+        # collect the attributes of all questions of all pages or questionsets
+        # of this catalog, which have the attribute of this value
+        attributes = set()
+        elements = self.project.catalog.pages + self.project.catalog.questions
+        for element in elements:
+            if element.attribute == value.attribute:
+                attributes.update([descendant.attribute for descendant in element.descendants])
+
+        values = self.get_queryset().filter(attribute__in=attributes, set_prefix=value.set_prefix,
+                                            set_index=value.set_index)
         values.delete()
 
         return Response(status=204)
 
     @action(detail=True, methods=['GET', 'POST'],
-            permission_classes=(HasModelPermission | HasObjectPermission, ))
+            permission_classes=(HasModelPermission | HasProjectPermission, ))
     def file(self, request, parent_lookup_project, pk=None):
         value = self.get_object()
 
@@ -311,70 +484,85 @@ class ProjectValueViewSet(ProjectNestedViewSetMixin, ModelViewSet):
         raise NotFound()
 
 
-class ProjectQuestionSetViewSet(ProjectNestedViewSetMixin, RetrieveModelMixin, GenericViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
-    serializer_class = QuestionSetSerializer
+class ProjectPageViewSet(ProjectNestedViewSetMixin, RetrieveModelMixin, GenericViewSet):
+    permission_classes = (HasModelPermission | HasProjectPagePermission, )
+    serializer_class = PageSerializer
 
     def get_queryset(self):
         try:
-            return QuestionSet.objects.order_by_catalog(self.project.catalog).select_related('section', 'section__catalog')
+            self.project.catalog.prefetch_elements()
+            page = Page.objects.filter_by_catalog(self.project.catalog).prefetch_related(
+                *Page.prefetch_lookups,
+                'page_questions__question__optionsets__optionset_options__option',
+                'page_questionsets__questionset__questionset_questions__question__optionsets__optionset_options__option',
+            )
+            return page
         except AttributeError:
             # this is needed for the swagger ui
-            return QuestionSet.objects.none()
+            return Page.objects.none()
+
+    def get_serializer_context(self):
+        context = super().get_serializer_context()
+        context['catalog'] = self.project.catalog
+        return context
 
     def dispatch(self, *args, **kwargs):
         response = super().dispatch(*args, **kwargs)
-
         if response.status_code == 200 and kwargs.get('pk'):
             try:
                 continuation = Continuation.objects.get(project=self.project, user=self.request.user)
             except Continuation.DoesNotExist:
                 continuation = Continuation(project=self.project, user=self.request.user)
 
-            continuation.questionset_id = kwargs.get('pk')
+            continuation.page_id = kwargs.get('pk')
             continuation.save()
 
         return response
 
     def retrieve(self, request, *args, **kwargs):
-        questionset = self.get_object()
-        conditions = questionset.conditions.select_related('source', 'target_option')
+        page = self.get_object()
+        conditions = page.conditions.select_related('source', 'target_option')
 
         values = self.project.values.filter(snapshot=None).select_related('attribute', 'option')
 
         if check_conditions(conditions, values):
-            serializer = self.get_serializer(questionset)
+            serializer = self.get_serializer(page)
             return Response(serializer.data)
         else:
-            if request.GET.get('back') == 'true' and questionset.prev is not None:
-                url = reverse('v1-projects:project-questionset-detail', args=[self.project.id, questionset.prev]) + '?back=true'
-                return HttpResponseRedirect(url, status=303)
-            elif questionset.next is not None:
-                url = reverse('v1-projects:project-questionset-detail', args=[self.project.id, questionset.next])
-                return HttpResponseRedirect(url, status=303)
+            if request.GET.get('back') == 'true':
+                prev_page = self.project.catalog.get_prev_page(page)
+                if prev_page is not None:
+                    url = reverse('v1-projects:project-page-detail',
+                                  args=[self.project.id, prev_page.id]) + '?back=true'
+                    return HttpResponseRedirect(url, status=303)
             else:
-                # indicate end of catalog
-                return Response(status=204)
+                next_page = self.project.catalog.get_next_page(page)
+                if next_page is not None:
+                    url = reverse('v1-projects:project-page-detail', args=[self.project.id, next_page.id])
+                    return HttpResponseRedirect(url, status=303)
 
-    @action(detail=False, url_path='continue', permission_classes=(HasModelPermission | HasObjectPermission, ))
+            # indicate end of catalog
+            return Response(status=204)
+
+    @action(detail=False, url_path='continue', permission_classes=(HasModelPermission | HasProjectPagePermission, ))
     def get_continue(self, request, pk=None, parent_lookup_project=None):
         try:
             continuation = Continuation.objects.get(project=self.project, user=self.request.user)
 
-            if continuation.questionset.section.catalog == self.project.catalog:
-                questionset = continuation.questionset
-            else:
-                questionset = self.get_queryset().first()
+            try:
+                page = Page.objects.filter_by_catalog(self.project.catalog).get(id=continuation.page_id)
+            except Page.DoesNotExist:
+                page = self.project.catalog.pages[0]
 
         except Continuation.DoesNotExist:
-            questionset = self.get_queryset().first()
+            page = self.project.catalog.pages[0]
 
-        serializer = self.get_serializer(questionset)
+        serializer = self.get_serializer(page)
         return Response(serializer.data)
 
 
 class MembershipViewSet(ReadOnlyModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
     serializer_class = MembershipSerializer
 
     filter_backends = (DjangoFilterBackend,)
@@ -387,12 +575,9 @@ class MembershipViewSet(ReadOnlyModelViewSet):
     def get_queryset(self):
         return Membership.objects.filter_user(self.request.user)
 
-    def get_detail_permission_object(self, obj):
-        return obj.project
-
 
 class IntegrationViewSet(ReadOnlyModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
     serializer_class = IntegrationSerializer
 
     filter_backends = (DjangoFilterBackend, )
@@ -404,12 +589,33 @@ class IntegrationViewSet(ReadOnlyModelViewSet):
     def get_queryset(self):
         return Integration.objects.filter_user(self.request.user)
 
+
+class InviteViewSet(ReadOnlyModelViewSet):
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
+    serializer_class = InviteSerializer
+
+    filter_backends = (DjangoFilterBackend, )
+    filterset_fields = (
+        'user',
+        'user__username',
+        'email',
+        'role'
+    )
+
+    def get_queryset(self):
+        return Invite.objects.filter_user(self.request.user)
+
     def get_detail_permission_object(self, obj):
         return obj.project
 
+    @action(detail=False, permission_classes=(IsAuthenticated, ))
+    def user(self, request):
+        invites = Invite.objects.filter(user=self.request.user)
+        serializer = UserInviteSerializer(invites, many=True)
+        return Response(serializer.data)
 
 class IssueViewSet(ReadOnlyModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
     serializer_class = IssueSerializer
 
     filter_backends = (DjangoFilterBackend, )
@@ -422,12 +628,9 @@ class IssueViewSet(ReadOnlyModelViewSet):
     def get_queryset(self):
         return Issue.objects.filter_user(self.request.user).prefetch_related('resources')
 
-    def get_detail_permission_object(self, obj):
-        return obj.project
-
 
 class SnapshotViewSet(ReadOnlyModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
     serializer_class = SnapshotSerializer
 
     filter_backends = (DjangoFilterBackend,)
@@ -439,30 +642,25 @@ class SnapshotViewSet(ReadOnlyModelViewSet):
     def get_queryset(self):
         return Snapshot.objects.filter_user(self.request.user)
 
-    def get_detail_permission_object(self, obj):
-        return obj.project
-
 
 class ValueViewSet(ReadOnlyModelViewSet):
-    permission_classes = (HasModelPermission | HasObjectPermission, )
+    permission_classes = (HasModelPermission | HasProjectsPermission, )
     serializer_class = ValueSerializer
 
     filter_backends = (SnapshotFilterBackend, DjangoFilterBackend)
     filterset_fields = (
         'project',
+        # snapshot is part of SnapshotFilterBackend
         'attribute',
-        'attribute__path',
+        'attribute__uri',
         'option',
-        'option__path',
+        'option__uri',
     )
 
     def get_queryset(self):
-        return Value.objects.filter_user(self.request.user)
+        return Value.objects.filter_user(self.request.user).select_related('attribute', 'option')
 
-    def get_detail_permission_object(self, obj):
-        return obj.project
-
-    @action(detail=True, permission_classes=(HasModelPermission | HasObjectPermission, ))
+    @action(detail=True, permission_classes=(HasModelPermission | HasProjectsPermission, ))
     def file(self, request, pk=None):
         value = self.get_object()
 
@@ -471,3 +669,15 @@ class ValueViewSet(ReadOnlyModelViewSet):
 
         # if it didn't work return 404
         raise NotFound()
+
+
+class CatalogViewSet(ListModelMixin, GenericViewSet):
+    permission_classes = (IsAuthenticated, )
+
+    serializer_class = CatalogSerializer
+
+    def get_queryset(self):
+        return Catalog.objects.filter_current_site() \
+                              .filter_group(self.request.user) \
+                              .filter_availability(self.request.user) \
+                              .order_by('-available', 'order')

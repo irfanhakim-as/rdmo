@@ -1,43 +1,19 @@
 from rest_framework import serializers
 
+from rdmo.core.serializers import MarkdownSerializerMixin
 from rdmo.projects.models import Project
-from rdmo.questions.models import Catalog, QuestionSet, Section
+from rdmo.questions.models import Catalog
 
 
-class QuestionSetSerializer(serializers.ModelSerializer):
+class CatalogSerializer(MarkdownSerializerMixin, serializers.ModelSerializer):
 
-    class Meta:
-        model = QuestionSet
-        fields = (
-            'id',
-            'title',
-            'has_conditions'
-        )
-
-
-class SectionSerializer(serializers.ModelSerializer):
-
-    questionsets = QuestionSetSerializer(many=True, read_only=True)
-
-    class Meta:
-        model = Section
-        fields = (
-            'id',
-            'title',
-            'questionsets'
-        )
-
-
-class CatalogSerializer(serializers.ModelSerializer):
-
-    sections = SectionSerializer(many=True, read_only=True)
+    markdown_fields = ('title', )
 
     class Meta:
         model = Catalog
         fields = (
             'id',
-            'title',
-            'sections'
+            'title'
         )
 
 
@@ -52,7 +28,9 @@ class ProjectOverviewSerializer(serializers.ModelSerializer):
             'id',
             'title',
             'catalog',
-            'read_only'
+            'read_only',
+            'created',
+            'updated'
         )
 
     def get_read_only(self, obj):

@@ -1,8 +1,7 @@
 import logging
 
+from django.conf import settings
 from django.contrib.auth.mixins import LoginRequiredMixin
-from django.core.exceptions import PermissionDenied
-from django.db import models
 from django.db.models import F, OuterRef, Subquery
 from django.forms import Form
 from django.http import Http404
@@ -13,78 +12,22 @@ from django.utils.translation import gettext_lazy as _
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.generic import DeleteView, DetailView, TemplateView
 from django.views.generic.edit import FormMixin
-from django_filters.views import FilterView
 
-from rdmo.accounts.utils import is_site_manager
 from rdmo.core.plugins import get_plugin, get_plugins
-from rdmo.core.views import ObjectPermissionMixin, RedirectViewMixin
+from rdmo.core.views import CSRFViewMixin, ObjectPermissionMixin, RedirectViewMixin, StoreIdViewMixin
 from rdmo.questions.models import Catalog
 from rdmo.questions.utils import get_widgets
+from rdmo.tasks.models import Task
+from rdmo.views.models import View
 
-from ..filters import ProjectFilter
-from ..models import Integration, Invite, Membership, Project, Value
+from ..models import Integration, Invite, Membership, Project
+from ..utils import get_upload_accept
 
 logger = logging.getLogger(__name__)
 
 
-class ProjectsView(LoginRequiredMixin, FilterView):
+class ProjectsView(LoginRequiredMixin, CSRFViewMixin, StoreIdViewMixin, TemplateView):
     template_name = 'projects/projects.html'
-    context_object_name = 'projects'
-    paginate_by = 20
-    filterset_class = ProjectFilter
-
-    def get_queryset(self):
-        # prepare projects queryset for this user
-        queryset = Project.objects.filter(user=self.request.user)
-        for instance in queryset:
-            queryset |= instance.get_descendants()
-        queryset = queryset.distinct()
-
-        # prepare subquery for role
-        membership_subquery = models.Subquery(
-            Membership.objects.filter(project=models.OuterRef('pk'), user=self.request.user).values('role')
-        )
-        queryset = queryset.annotate(role=membership_subquery)
-
-        # prepare subquery for last_changed
-        last_changed_subquery = models.Subquery(
-            Value.objects.filter(project=models.OuterRef('pk')).order_by('-updated').values('updated')[:1]
-        )
-        queryset = queryset.annotate(last_changed=models.functions.Greatest('updated', last_changed_subquery))
-
-        # order by last changed
-        queryset = queryset.order_by('-last_changed')
-
-        return queryset
-
-    def get_context_data(self, **kwargs):
-        context = super(ProjectsView, self).get_context_data(**kwargs)
-        context['invites'] = Invite.objects.filter(user=self.request.user)
-        context['is_site_manager'] = is_site_manager(self.request.user)
-        return context
-
-
-class SiteProjectsView(LoginRequiredMixin, FilterView):
-    template_name = 'projects/site_projects.html'
-    context_object_name = 'projects'
-    paginate_by = 20
-    filterset_class = ProjectFilter
-    model = Project
-
-    def get_queryset(self):
-        if is_site_manager(self.request.user):
-            # prepare projects queryset for the site manager
-            queryset = Project.objects.filter_current_site()
-
-            # prepare subquery for last_changed
-            last_changed_subquery = models.Subquery(
-                Value.objects.filter(project=models.OuterRef('pk')).order_by('-updated').values('updated')[:1]
-            )
-            queryset = queryset.annotate(last_changed=models.functions.Greatest('updated', last_changed_subquery))
-
-            return queryset
-        else:
-            raise PermissionDenied()
 
 
 class ProjectDetailView(ObjectPermissionMixin, DetailView):
@@ -102,28 +45,49 @@ class ProjectDetailView(ObjectPermissionMixin, DetailView):
     permission_required = 'projects.view_project_object'
 
     def get_context_data(self, **kwargs):
-        context = super(ProjectDetailView, self).get_context_data(**kwargs)
+        context = super().get_context_data(**kwargs)
         project = context['project']
         ancestors = project.get_ancestors(include_self=True)
         values = project.values.filter(snapshot=None).select_related('attribute', 'option')
-        highest = Membership.objects.filter(project__in=ancestors, user_id=OuterRef('user_id')).order_by('-project__level')
+        highest = Membership.objects.filter(project__in=ancestors, user_id=OuterRef('user_id')) \
+                                    .order_by('-project__level')
         memberships = Membership.objects.filter(project__in=ancestors) \
                                         .annotate(highest=Subquery(highest.values('project__level')[:1])) \
                                         .filter(highest=F('project__level')) \
                                         .select_related('user')
 
+        if settings.SOCIALACCOUNT:
+            # prefetch the users social account, if that relation exists
+            memberships = memberships.prefetch_related('user__socialaccount_set')
+
         integrations = Integration.objects.filter(project__in=ancestors)
         context['catalogs'] = Catalog.objects.filter_current_site() \
                                              .filter_group(self.request.user) \
                                              .filter_availability(self.request.user)
+        context['tasks_available'] = Task.objects.filter_current_site() \
+                                                 .filter_catalog(self.object.catalog) \
+                                                 .filter_group(self.request.user) \
+                                                 .filter_availability(self.request.user).exists()
+        context['views_available'] = View.objects.filter_current_site() \
+                                                 .filter_catalog(self.object.catalog) \
+                                                 .filter_group(self.request.user) \
+                                                 .filter_availability(self.request.user).exists()
+        ancestors_import = []
+        for instance in ancestors.exclude(id=project.id):
+            if self.request.user.has_perm('projects.view_project_object', instance):
+                ancestors_import.append(instance)
+        context['ancestors_import'] = ancestors_import
         context['memberships'] = memberships.order_by('user__last_name', '-project__level')
         context['integrations'] = integrations.order_by('provider_key', '-project__level')
         context['providers'] = get_plugins('PROJECT_ISSUE_PROVIDERS')
-        context['issues'] = [issue for issue in project.issues.all() if issue.resolve(values)]
+        context['issues'] = [
+            issue for issue in project.issues.order_by('-status', 'task__order', 'task__uri') if issue.resolve(values)
+        ]
+        context['views'] = project.views.order_by('order', 'uri')
         context['snapshots'] = project.snapshots.all()
         context['invites'] = project.invites.all()
         context['membership'] = Membership.objects.filter(project=project, user=self.request.user).first()
-
+        context['upload_accept'] = get_upload_accept()
         return context
 
 
@@ -145,7 +109,7 @@ class ProjectJoinView(LoginRequiredMixin, RedirectViewMixin, TemplateView):
                 error = _('Sorry, your invitation has been expired.')
                 invite.delete()
             elif invite.user and invite.user != request.user:
-                error = _('Sorry, but this invitation is for the user "%s".' % invite.user)
+                error = _('Sorry, but this invitation is for the user "%s".') % invite.user
             elif Membership.objects.filter(project=invite.project, user=request.user).exists():
                 invite.delete()
                 return redirect(invite.project.get_absolute_url())
@@ -235,7 +199,7 @@ class ProjectQuestionsView(ObjectPermissionMixin, DetailView):
             return redirect('project_error', pk=self.object.pk)
         else:
             context = self.get_context_data(object=self.object)
-            context['widgets'] = get_widgets()
+            context['widgets'] = {widget.template_name for widget in get_widgets() if widget.template_name}
             return self.render_to_response(context)
 
 

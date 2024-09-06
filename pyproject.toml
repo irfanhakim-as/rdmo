@@ -1,0 +1,243 @@
+[build-system]
+build-backend = "setuptools.build_meta"
+requires = ["setuptools", "wheel"]
+
+[project]
+name = "rdmo"
+description = "RDMO is a tool to support the systematic planning, organisation and implementation of the data management throughout the course of a research project."
+readme = "README.md"
+keywords = [
+  "data management plan",
+  "dmp",
+  "rdmo",
+  "research data",
+  "research data management",
+]
+license = {text = "Apache-2.0"}
+authors = [
+  {name = "RDMO Arbeitsgemeinschaft", email = "rdmo-team@listserv.dfn.de"},
+]
+requires-python = ">=3.8"
+classifiers = [
+  "Development Status :: 5 - Production/Stable",
+  "Environment :: Web Environment",
+  "Framework :: Django :: 4.2",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dynamic = [
+  "version",
+]
+dependencies = [
+  # dependencies with major version on zero are declared with
+  # major.minor.patch, because they can potentially introduce breaking changes
+  # in minor version updates anytime
+  "defusedcsv>=2.0,<3.0",
+  "defusedxml>=0.7.1,<1.0",
+  "django>=4.2,<5.0",
+  "django-cleanup>=8.0,<9.0",
+  "django-compressor>=4.4,<5.0",
+  "django-extensions>=3.2,<4.0",
+  "django-filter>=23.2,<25.0",
+  "django-libsass>=0.9,<1.0",
+  "django-mathfilters>=1.0,<2.0",
+  "django-mptt==0.14.0",  # pinned, 0.15 requires Python >= 3.9
+  "django-rest-swagger>=2.2,<3.0",
+  "django-settings-export>=1.2,<2.0",
+  "django-split-settings>=1.2,<2.0",
+  "django-widget-tweaks>=1.5,<2.0",
+  "djangorestframework>=3.15,<4.0",
+  "drf-extensions>=0.7.1,<1.0",
+  "iso8601>=2.0,<3.0",
+  "markdown>=3.4,<4.0",
+  "packaging>=23.2,<25.0",
+  "pypandoc>=1.11,<2.0",
+  "requests-toolbelt>=1.0,<2.0",
+  "rules>=3.4,<4.0",
+]
+
+[project.optional-dependencies]
+allauth = [
+  "django-allauth[socialaccount,openid]>=64.1.0,<64.2.0",
+]
+ci = [
+  "rdmo[dev]",
+  "pytest-github-actions-annotate-failures>=0.2.0,<0.3.0",
+]
+dev = [
+  "build>=1.0,<2.0",
+  "pipdeptree>=2.13,<3.0",
+  "pre-commit>=3.4,<4.0",
+  "setuptools>=73,<74",
+  "twine>=5.1.1,<6.0",
+  "wheel>=0.42,<0.45",
+  "rdmo[allauth]",
+  "rdmo[pytest]",
+]
+gunicorn = [
+  "gunicorn>=23.0,<24.0",
+]
+ldap = [
+  "django-auth-ldap>=4.5,<5.0",
+]
+mysql = [
+  "mysqlclient>=2.2,<3.0",
+]
+postgres = [
+  "psycopg[binary]>=3.1,<4.0",
+]
+pytest = [
+  "pytest>=8.0,<9.0",
+  "pytest-cov>=4.1,<6.0",
+  "pytest-django>=4.5,<5.0",
+  "pytest-mock>=3.11,<4.0",
+  "pytest-playwright>=0.4.3,<0.6.0",
+  "pytest-randomly>=3.15,<4.0",
+  "pytest-xdist>=3.3,<4.0",
+]
+
+[project.urls]
+changelog = "https://github.com/rdmorganiser/rdmo/blob/main/CHANGELOG.md"
+documentation = "https://rdmo.readthedocs.io"
+homepage = "https://rdmorganiser.github.io"
+issues = "https://github.com/rdmorganiser/rdmo/issues"
+repository = "https://github.com/rdmorganiser/rdmo.git"
+slack = "https://rdmo.slack.com"
+
+[tool.setuptools.packages.find]
+include = ["rdmo*"]
+exclude = ["*assets*", "*tests*"]
+
+[tool.setuptools.package-data]
+"*" = ["*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "rdmo.__version__"}
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+  "B",    # flake8-bugbear
+  "C4",   # flake8-comprehensions
+  "DJ",   # flake8-django
+  "E",    # pycodestyle
+  "F",    # pyflakes
+  "I",    # isort
+  "PGH",  # pygrep-hooks
+  "PT",   # flake8-pytest-style
+  "RUF",  # ruff
+  "UP",   # pyupgrade
+  "W",    # pycodestyle
+  "YTT",  # flake8-2020
+  "G",    # flake8-logging-format
+  "INT"   # flake8-gettext
+]
+ignore = [
+  "B006",   # mutable-argument-default
+  "B007",   # unused-loop-control-variable
+  "B018",   # useless-expression
+  "RUF012", # mutable-class-default
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["rdmo"]
+section-order = [
+  "future",
+  "standard-library",
+  "pytest",
+  "django",
+  "rest_framework",
+  "third-party",
+  "first-party",
+  "local-folder"
+]
+
+[tool.ruff.lint.isort.sections]
+pytest = ["pytest"]
+django = ["django"]
+rest_framework = ["rest_framework"]
+
+[tool.ruff.lint.per-file-ignores]
+"rdmo/**/models/__init__.py" = [
+  "F401", # unused-import
+]
+"rdmo/**/serializers/v1/__init__.py" = [
+  "F401", # unused-import
+]
+"rdmo/**/views/__init__.py" = [
+  "F401", # unused-import
+]
+"rdmo/**/tests/test_*.py" = [
+  "S101", # assert
+  "S106", # hardcoded-password-func-arg
+]
+"testing/config/settings/*.py" = [
+  "F401", # unused-import
+  "F403", # undefined-names
+  "F405", # undefined-names
+  "F821", # undefined-names
+]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+parametrize-names-type = "csv"
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings"
+testpaths = ["rdmo/*/tests"]
+pythonpath = [".", "testing"]
+addopts = '-p no:randomly -m "not e2e"'
+markers = [
+  "e2e: marks tests as end-to-end tests using playwright (deselect with '-m \"not e2e\"')",
+]
+filterwarnings = [
+  # fail on RemovedInDjango50Warning exception
+  "error::django.utils.deprecation.RemovedInDjango50Warning",
+
+  # ignore warnings raised from within coreapi 2.3.3
+  "ignore:'cgi' is deprecated and slated for removal in Python 3.13:DeprecationWarning",
+  "ignore:pkg_resources is deprecated as an API:DeprecationWarning",
+
+  # ignore warning from rest_framework about coreapi
+  "ignore:CoreAPI compatibility is deprecated and will be removed in DRF 3.17:rest_framework.RemovedInDRF317Warning",
+
+  # ignore warning from django_filters
+  "ignore:Built-in schema generation is deprecated. Use drf-spectacular.:django_filters.RemovedInDjangoFilter25Warning",
+
+  # ignore warnings raised from within django itself
+  # django/core/files/storage/__init__.py
+  "ignore:django.core.files.storage.get_storage_class is deprecated:django.utils.deprecation.RemovedInDjango51Warning",
+]
+
+[tool.coverage.run]
+source = ["rdmo"]
+branch = true
+parallel = true
+
+[tool.coverage.report]
+omit = [
+    "*/management/*",
+    "*/migrations/*",
+    "*/tests/*",
+]
+exclude_lines = [
+    "raise Exception",
+    "except ImportError:"
+]
+
+[tool.typos] # Ref: https://github.com/crate-ci/typos/blob/master/docs/reference.md
+# add "spellchecker:disable-line" to ignore specific lines
+default.extend-ignore-re = [
+  "(?Rm)^.*(#|//)\\s*spellchecker:disable-line$", # for .py files
+  "(?Rm)^.*<!-- spellchecker:disable-line -->$", # for .html files
+]

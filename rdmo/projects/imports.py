@@ -2,25 +2,24 @@ import base64
 import io
 import logging
 import mimetypes
-from urllib.parse import urlparse, quote
-
-import requests
 
 from django import forms
-from django.core.files import File
 from django.core.exceptions import ValidationError
+from django.core.files import File
 from django.shortcuts import redirect, render
 from django.utils.translation import gettext_lazy as _
 
-from rdmo.core.plugins import Plugin
+import requests
+
 from rdmo.core.imports import handle_fetched_file
+from rdmo.core.plugins import Plugin
 from rdmo.core.xml import get_ns_map, get_uri, read_xml_file
 from rdmo.domain.models import Attribute
 from rdmo.options.models import Option
 from rdmo.questions.models import Catalog
-from rdmo.services.providers import GitHubProviderMixin, GitLabProviderMixin
 from rdmo.tasks.models import Task
 from rdmo.views.models import View
+
 from .models import Project, Snapshot, Value
 
 log = logging.getLogger(__name__)
@@ -28,6 +27,7 @@ log = logging.getLogger(__name__)
 
 class Import(Plugin):
 
+    accept = None
     upload = True
 
     def __init__(self, *args, **kwargs):
@@ -88,6 +88,8 @@ class Import(Plugin):
 
 class RDMOXMLImport(Import):
 
+    accept = '.xml'
+
     def check(self):
         file_type, encoding = mimetypes.guess_type(self.file_name)
         if file_type == 'application/xml' or file_type == 'text/xml':
@@ -99,11 +101,21 @@ class RDMOXMLImport(Import):
     def process(self):
         if self.current_project is None:
             catalog_uri = get_uri(self.root.find('catalog'), self.ns_map)
+
+            available_catalogs = Catalog.objects.filter_current_site() \
+                                                .filter_group(self.request.user) \
+                                                .filter_availability(self.request.user) \
+                                                .order_by('order')
+
             try:
-                self.catalog = Catalog.objects.all().get(uri=catalog_uri)
+                self.catalog = available_catalogs.get(uri=catalog_uri)
             except Catalog.DoesNotExist:
-                log.info('Catalog not in db. Created with uri %s', catalog_uri)
-                self.catalog = Catalog.objects.all().first()
+                log.info('Catalog with uri %s does not exists. Used first available catalog.', catalog_uri)
+                self.catalog = available_catalogs.first()
+
+            if self.catalog is None:
+                log.info('No catalog is available.')
+                raise ValidationError('No catalog is available.')
 
             self.project = Project()
             self.project.title = self.root.find('title').text or ''
@@ -169,6 +181,18 @@ class RDMOXMLImport(Import):
             value.set_prefix = ''
 
         value.set_index = int(value_node.find('set_index').text)
+
+        try:
+            set_collection_text = value_node.find('set_collection').text
+            if set_collection_text == 'True':
+                value.set_collection = True
+            elif set_collection_text == 'False':
+                value.set_collection = False
+            else:
+                value.set_collection = None
+        except AttributeError:
+            value.set_collection = None
+
         value.collection_index = int(value_node.find('collection_index').text)
 
         value.text = value_node.find('text').text or ''
@@ -206,8 +230,6 @@ class RDMOXMLImport(Import):
 
 
 class URLImport(RDMOXMLImport):
-
-    upload = False
 
     class Form(forms.Form):
         url = forms.URLField(label=_('Import project from this URL'), required=True)
@@ -248,107 +270,3 @@ class URLImport(RDMOXMLImport):
             'source_title': 'URL',
             'form': form
         }, status=200)
-
-
-class GitHubImport(GitHubProviderMixin, RDMOXMLImport):
-
-    upload = False
-
-    class Form(forms.Form):
-        repo = forms.CharField(label=_('GitHub repository'),
-                               help_text=_('Please use the form username/repository or organization/repository.'))
-        path = forms.CharField(label=_('File path'))
-        ref = forms.CharField(label=_('Branch, tag, or commit'), initial='master')
-
-    def render(self):
-        return render(self.request, 'projects/project_import_form.html', {
-            'source_title': 'GitHub',
-            'form': self.Form()
-        }, status=200)
-
-    def submit(self):
-        form = self.Form(self.request.POST)
-
-        if 'cancel' in self.request.POST:
-            if self.project is None:
-                return redirect('projects')
-            else:
-                return redirect('project', self.project.id)
-
-        if form.is_valid():
-            self.request.session['import_source_title'] = self.source_title = form.cleaned_data['path']
-
-            url = '{api_url}/repos/{repo}/contents/{path}?ref={ref}'.format(
-                api_url=self.api_url,
-                repo=quote(form.cleaned_data['repo']),
-                path=quote(form.cleaned_data['path']),
-                ref=quote(form.cleaned_data['ref'])
-            )
-
-            return self.get(self.request, url)
-
-        return render(self.request, 'projects/project_import_form.html', {
-            'source_title': 'GitHub',
-            'form': form
-        }, status=200)
-
-    def get_success(self, request, response):
-        file_content = response.json().get('content')
-        request.session['import_file_name'] = handle_fetched_file(base64.b64decode(file_content))
-
-        if self.current_project:
-            return redirect('project_update_import', self.current_project.id)
-        else:
-            return redirect('project_create_import')
-
-
-class GitLabImport(GitLabProviderMixin, RDMOXMLImport):
-
-    upload = False
-
-    class Form(forms.Form):
-        repo = forms.CharField(label=_('GitLab repository'),
-                               help_text=_('Please use the form username/repository or organization/repository.'))
-        path = forms.CharField(label=_('File path'),)
-        ref = forms.CharField(label=_('Branch, tag, or commit'), initial='master')
-
-    def render(self):
-        return render(self.request, 'projects/project_import_form.html', {
-            'source_title': self.gitlab_url,
-            'form': self.Form()
-        }, status=200)
-
-    def submit(self):
-        form = self.Form(self.request.POST)
-
-        if 'cancel' in self.request.POST:
-            if self.project is None:
-                return redirect('projects')
-            else:
-                return redirect('project', self.project.id)
-
-        if form.is_valid():
-            self.request.session['import_source_title'] = form.cleaned_data['path']
-
-            url = '{api_url}/projects/{repo}/repository/files/{path}?ref={ref}'.format(
-                api_url=self.api_url,
-                repo=quote(form.cleaned_data['repo'], safe=''),
-                path=quote(form.cleaned_data['path'], safe=''),
-                ref=quote(form.cleaned_data['ref'], safe='')
-            )
-
-            return self.get(self.request, url)
-
-        return render(self.request, 'projects/project_import_form.html', {
-            'source_title': self.gitlab_url,
-            'form': form
-        }, status=200)
-
-    def get_success(self, request, response):
-        file_content = response.json().get('content')
-        request.session['import_file_name'] = handle_fetched_file(base64.b64decode(file_content))
-
-        if self.current_project:
-            return redirect('project_update_import', self.current_project.id)
-        else:
-            return redirect('project_create_import')

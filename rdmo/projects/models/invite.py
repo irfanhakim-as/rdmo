@@ -6,6 +6,7 @@ from django.utils.timezone import now
 from django.utils.translation import gettext_lazy as _
 
 from ..constants import ROLE_CHOICES
+from ..managers import InviteManager
 
 
 class Invite(models.Model):
@@ -24,8 +25,8 @@ class Invite(models.Model):
     )
     email = models.EmailField(
         blank=True,
-        verbose_name=_('Email'),
-        help_text=_('The email for this membership.')
+        verbose_name=_('E-mail'),
+        help_text=_('The e-mail for this membership.')
     )
     role = models.CharField(
         max_length=12, choices=ROLE_CHOICES,
@@ -42,13 +43,15 @@ class Invite(models.Model):
         help_text=_('The timestamp for this invite.')
     )
 
+    objects = InviteManager()
+
     class Meta:
         ordering = ('timestamp', )
         verbose_name = _('Invite')
         verbose_name_plural = _('Invites')
 
     def __str__(self):
-        return '%s / %s / %s' % (self.project.title, self.email, self.role)
+        return f'{self.project.title} / {self.email} / {self.role}'
 
     def save(self, *args, **kwargs):
         if self.timestamp is None:
@@ -60,10 +63,10 @@ class Invite(models.Model):
 
     @property
     def is_expired(self):
-        if settings.PROJECT_INVITE_TIMEOUT is None:
-            return False
-        else:
+        if settings.PROJECT_INVITE_TIMEOUT:
             return (now() - self.timestamp).total_seconds() > settings.PROJECT_INVITE_TIMEOUT
+        else:
+            return False
 
     def make_token(self):
         self.token = salted_hmac(self.key_salt, self._make_hash_value()).hexdigest()[::2]

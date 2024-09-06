@@ -5,6 +5,7 @@ VALUE_TYPE_URL = 'url'
 VALUE_TYPE_INTEGER = 'integer'
 VALUE_TYPE_FLOAT = 'float'
 VALUE_TYPE_BOOLEAN = 'boolean'
+VALUE_TYPE_DATE = 'date'
 VALUE_TYPE_DATETIME = 'datetime'
 VALUE_TYPE_OPTIONS = 'option'
 VALUE_TYPE_EMAIL = 'email'
@@ -16,42 +17,79 @@ VALUE_TYPE_CHOICES = (
     (VALUE_TYPE_INTEGER, _('Integer')),
     (VALUE_TYPE_FLOAT, _('Float')),
     (VALUE_TYPE_BOOLEAN, _('Boolean')),
+    (VALUE_TYPE_DATE, _('Date')),
     (VALUE_TYPE_DATETIME, _('Datetime')),
-    (VALUE_TYPE_EMAIL, _('Email')),
+    (VALUE_TYPE_EMAIL, _('E-mail')),
     (VALUE_TYPE_PHONE, _('Phone')),
     (VALUE_TYPE_OPTIONS, _('Option')),
     (VALUE_TYPE_FILE, _('File'))
 )
 
 PERMISSIONS = {
-    'condition': (
+    'conditions.condition': (
         'conditions.add_condition', 'conditions.change_condition', 'conditions.delete_condition'
     ),
-    'attribute': (
+    'domain.attribute': (
         'domain.add_attribute', 'domain.change_attribute', 'domain.delete_attribute'
     ),
-    'optionset': (
+    'options.optionset': (
         'options.add_optionset', 'options.change_optionset', 'options.delete_optionset'
     ),
-    'option': (
+    'options.option': (
         'options.add_option', 'options.change_option', 'options.delete_option'
     ),
-    'catalog': (
+    'questions.catalog': (
         'questions.add_catalog', 'questions.change_catalog', 'questions.delete_catalog'
     ),
-    'section': (
+    'questions.section': (
         'questions.add_section', 'questions.change_section', 'questions.delete_section'
     ),
-    'questionset': (
+    'questions.page': (
+        'questions.add_page', 'questions.change_page', 'questions.delete_page'
+    ),
+    'questions.questionset': (
         'questions.add_questionset', 'questions.change_questionset', 'questions.delete_questionset'
     ),
-    'question': (
+    'questions.question': (
         'questions.add_question', 'questions.change_question', 'questions.delete_question'
     ),
-    'task': (
+    'tasks.task': (
         'tasks.add_task', 'tasks.change_task', 'tasks.delete_task'
     ),
-    'view': (
+    'views.view': (
         'views.add_view', 'views.change_view', 'views.delete_view'
     )
+}
+
+HUMAN2BYTES_MAPPER = {
+    "b": {"base": 1000, "power": 0},
+    "kb": {"base": 1000, "power": 1},
+    "k": {"base": 1000, "power": 1},
+    "mb": {"base": 1000, "power": 2},
+    "m": {"base": 1000, "power": 2},
+    "gb": {"base": 1000, "power": 3},
+    "g": {"base": 1000, "power": 3},
+    "tb": {"base": 1000, "power": 4},
+    "t": {"base": 1000, "power": 4},
+    "p": {"base": 1000, "power": 5},
+    "pb": {"base": 1000, "power": 5},
+    "kib": {"base": 1024, "power": 1},
+    "mib": {"base": 1024, "power": 2},
+    "gib": {"base": 1024, "power": 3},
+    "tib": {"base": 1024, "power": 4},
+    "pib": {"base": 1024, "power": 5},
+}
+
+RDMO_MODELS = {
+  'attribute': 'domain.attribute',
+  'condition': 'conditions.condition',
+  'option': 'options.option',
+  'optionset': 'options.optionset',
+  'question': 'questions.question',
+  'questionset': 'questions.questionset',
+  'page': 'questions.page',
+  'section': 'questions.section',
+  'catalog': 'questions.catalog',
+  'task': 'tasks.task',
+  'view': 'views.view'
 }
